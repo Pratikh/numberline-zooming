@@ -1,1570 +1,1644 @@
-var w,
-  h,
-  g,
-  el,
-  ratio,
-  my = {};
+/*!
+ * ZoomableNumberline
+ * An infinitely zoomable number line rendered on canvas.
+ *
+ * Minus/plus numbers are drawn red/blue and the line is split at zero with a
+ * fading "pipe" gradient. Deep zoom is powered by an arbitrary-precision
+ * decimal type (Num) so tick labels stay exact long after IEEE-754 would
+ * have collapsed into float noise.
+ *
+ * Originally a prototype by pratikh; modernized and bug-fixed.
+ * MIT licensed - see LICENSE.
+ */
+(function (global) {
+  "use strict";
 
-function numberzoomMain(mode) {
-  w = 1000;
-  h = 150;
-  el = document.getElementsByTagName("canvas")[0];
-  ratio = 2;
-  el.width = w * ratio;
-  el.height = h * ratio;
-  el.style.width = w + "px";
-  el.style.height = h + "px";
-  g = el.getContext("2d");
-  g.setTransform(ratio, 0, 0, ratio, 0, 0);
-  this.zoomInQ = true;
-  my.marksQ = false;
-  my.marks = [];
-  my.t0 = 0;
-  lt = 40;
-  wd = 900;
-  my.currX = w / 2;
-  yLn = 70;
-  mouseDownQ = false;
-  my.shiftQ = false;
-  el.addEventListener(
-    "mousemove",
-    function (ev) {
-      var bRect = el.getBoundingClientRect();
-      my.currX = (ev.clientX - bRect.left) * (el.width / ratio / bRect.width);
-      ev.preventDefault();
-    },
-    false
-  );
-  el.addEventListener(
-    "mousedown",
-    function (ev) {
-      mouseDownQ = true;
-      my.shiftQ = ev.shiftKey;
-    },
-    false
-  );
-  el.addEventListener(
-    "mouseup",
-    function (ev) {
-      mouseDownQ = false;
-    },
-    false
-  );
-  el.addEventListener(
-    "touchmove",
-    function (ev) {
-      var touch = ev.targetTouches[0];
-      var bRect = el.getBoundingClientRect();
-      my.currX =
-        (touch.clientX - bRect.left) * (el.width / ratio / bRect.width);
-      ev.preventDefault();
-    },
-    false
-  );
-  el.addEventListener(
-    "touchstart",
-    function (ev) {
-      mouseDownQ = true;
-      my.shiftQ = ev.shiftKey;
-    },
-    false
-  );
-  el.addEventListener(
-    "touchend",
-    function (ev) {
-      mouseDownQ = false;
-    },
-    false
-  );
-  coords = new CoordsFull(wd, 200, "-1", "-10,", "11", "10", true);
-  tickSparseness = 0.04;
-  currFrame = 0;
-  maxFrames = 10000;
-  my.zoomCount = 0;
-  my.moveCount = 0;
-  keyCount = 0;
-  redraw();
-  animate();
-}
+  /* ------------------------------------------------------------------ *
+   * Small utilities
+   * ------------------------------------------------------------------ */
 
-function reset() {
-  coords = new CoordsFull(wd, 200, "-1", "-10,", "11", "10", true);
-  keyCount = 0;
-  my.marks = [];
-  redraw();
-}
+  function repeatStr(chr, count) {
+    return count > 0 ? chr.repeat(count) : "";
+  }
 
-function animate() {
-  var edge = 60;
+  /** Normalize "#rgb" / "#rrggbb" / "rgb()" into an "r,g,b" triple string. */
+  function toRgbTriple(color) {
+    if (typeof color !== "string") return "0,0,0";
 
-  if (mouseDownQ) {
-    if (my.currX < edge || my.currX > w - edge) {
-      var speed = 1;
+    var hex = color.trim();
 
-      if (my.currX < edge) {
-        speed = -(edge - my.currX) * 0.0006;
-        coords.moveRel(speed);
-      } else {
-        speed = (my.currX - (w - edge)) * 0.0006;
-        coords.moveRel(speed);
+    if (hex.charAt(0) === "#") {
+      hex = hex.slice(1);
+
+      if (hex.length === 3) {
+        hex = hex.charAt(0) + hex.charAt(0) + hex.charAt(1) + hex.charAt(1) + hex.charAt(2) + hex.charAt(2);
       }
 
-      redraw();
-    } else {
-      if (my.shiftQ || !this.zoomInQ) {
-        my.zoomCount = 2;
-      } else {
-        my.zoomCount = -2;
-      }
-    }
-  }
+      var r = parseInt(hex.substring(0, 2), 16);
+      var g = parseInt(hex.substring(2, 4), 16);
+      var b = parseInt(hex.substring(4, 6), 16);
 
-  if (my.zoomCount > 0) {
-    my.zoomCount--;
-    doZoom(1);
-  }
-
-  if (my.zoomCount < 0) {
-    my.zoomCount++;
-    doZoom(-1);
-  }
-
-  if (my.moveCount > 0) {
-    my.moveCount--;
-    doMove(1);
-  }
-
-  if (my.moveCount < 0) {
-    my.moveCount++;
-    doMove(-1);
-  }
-
-  requestAnimationFrame(animate);
-}
-
-function onKey(ev) {
-  keyCount++;
-  var keyCode = ev.keyCode;
-
-  switch (keyCode) {
-    case 38:
-    case 104:
-    case 87:
-      my.zoomCount = -4;
-      countQ = true;
-      ev.preventDefault();
-      break;
-
-    case 40:
-    case 98:
-    case 83:
-      my.zoomCount = 4;
-      countQ = true;
-      ev.preventDefault();
-      break;
-
-    case 37:
-    case 100:
-    case 65:
-      my.moveCount = -4;
-      countQ = true;
-      ev.preventDefault();
-      break;
-
-    case 39:
-    case 102:
-    case 68:
-      my.moveCount = 4;
-      countQ = true;
-      ev.preventDefault();
-      break;
-
-    case 16:
-      break;
-
-    default:
-      keyCount--;
-  }
-
-  my.shiftQ = ev.shiftKey;
-}
-
-function doZoom(dirn) {
-  var rel = (my.currX - lt) / wd;
-  rel = Math.max(Math.min(rel, 1), 0);
-
-  if (dirn > 0) {
-    coords.scale(1.02, rel);
-  } else {
-    coords.scale(0.98, rel);
-  }
-
-  my.t0 = performance.now();
-  redraw();
-}
-
-function doMove(dirn) {
-  if (dirn > 0) {
-    coords.moveRel(0.015);
-  } else {
-    coords.moveRel(-0.015);
-  }
-
-  my.t0 = performance.now();
-  redraw();
-}
-
-function getTicks() {
-  var majorTick = coords.xTickInterval(tickSparseness, true);
-  var minorTick = coords.xTickInterval(tickSparseness, false);
-  var minorTickEvery = majorTick.div(minorTick, 0).getNumber();
-  var majorNum = majorTick;
-  var minorNum = majorNum.div(new Num(minorTickEvery.toString()), 30);
-  var curNum = coords.xStt;
-  curNum = curNum.div(majorNum, 0);
-  curNum = curNum.sub(new Num("1"));
-  curNum = curNum.mult(majorNum);
-  var gap = num2pix(minorNum) - num2pix(new Num("0"));
-  var textWd = majorNum.add(minorNum).fmt().length * 9;
-  var labelQ = textWd < gap;
-  var ticks = [];
-  var tickCount = 0;
-
-  while (curNum.compare(coords.xEnd) <= 0 && tickCount < 100) {
-    tickCount++;
-    var tick = curNum.clone();
-
-    for (
-      var minorTickNo = 0;
-      minorTickNo < minorTickEvery;
-      minorTickNo++, tick = tick.add(minorNum)
-    ) {
-      if (tick.compare(coords.xStt) < 0) continue;
-      if (tick.compare(coords.xEnd) > 0) continue;
-      var tickPx = num2pix(tick);
-      ticks.push([minorTickNo == 0, minorTickNo, tickPx, tick.fmt(10)]);
+      if (isNaN(r) || isNaN(g) || isNaN(b)) return "0,0,0";
+      return r + "," + g + "," + b;
     }
 
-    curNum = curNum.add(majorNum);
+    var match = hex.match(/rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/i);
+
+    if (match) return match[1] + "," + match[2] + "," + match[3];
+
+    return "0,0,0";
   }
 
-  return ticks;
-}
+  /* ------------------------------------------------------------------ *
+   * Num - arbitrary precision decimal
+   *
+   * Representation: `digits` is an unsigned decimal string (no sign, no
+   * point) and `dec` is how many of those digits sit after the decimal
+   * point. Magnitude is therefore digits * 10^-dec, and `sign` carries
+   * the sign. `dec` may be negative for trailing-zero integers.
+   * ------------------------------------------------------------------ */
 
-function redraw() {
-  g.clearRect(0, 0, el.width, el.height);
-  drawNumLine(); // document.getElementById('keycount').innerHTML = 'keys: ' + keyCount;
-}
-
-function drawNumLine() {
-  var ticks = getTicks();
-  g.textAlign = "center";
-  g.lineWidth = 1;
-  var minV = Infinity;
-  var maxV = -Infinity;
-  var zeroPx = -999;
-
-  for (var i = 0; i < ticks.length; i++) {
-    var tick = ticks[i];
-    var majorQ = tick[0];
-    var vStr = tick[3];
-    var v = Number(vStr);
-    var xp = lt + tick[2];
-    if (v > maxV) maxV = v;
-    if (v < minV) minV = v;
-    g.font = "15px Arial";
-    var clr = "black";
-    if (v < 0) clr = "red";
-
-    if (v == 0) {
-      zeroPx = xp;
-      g.font = "22px Arial";
-      clr = "black";
-    }
-
-    if (v > 0) clr = "blue";
-    g.strokeStyle = clr;
-    g.fillStyle = clr;
-    var txtY = 35;
-
-    if (vStr.length > 5) {
-      var lastChr = vStr.replace(/0+$/, "").slice(-1);
-      var evenQ = Number(lastChr) % 2 == 0;
-
-      if (!evenQ) {
-        txtY = 55;
-      }
-    }
-
-    var tickHt = 1;
-
-    if (majorQ) {
-      g.lineWidth = 2;
-      tickHt = 12;
-      g.fillText(vStr, xp, yLn + txtY);
-    } else {
-      g.lineWidth = 1;
-      tickHt = 8;
-    }
-
-    g.beginPath();
-    g.moveTo(xp, yLn - tickHt);
-    g.lineTo(xp, yLn + tickHt);
-    g.stroke();
-    v += 1;
-  }
-
-  if (zeroPx == -999) {
-    if (maxV < 0) zeroPx = w;
-    if (minV > 0) zeroPx = -1;
-  }
-
-  var lnStt = lt - 25;
-  var lnEnd = lt + wd + 25;
-
-  if (zeroPx > lnStt) {
-    g.strokeStyle = "red";
-    g.drawPipe(
-      lnStt + 10,
-      yLn,
-      Math.min(zeroPx, lnEnd - 10),
-      yLn,
-      g.strokeStyle
-    );
-  }
-
-  if (zeroPx < lnEnd) {
-    g.strokeStyle = "blue";
-    g.drawPipe(
-      Math.max(zeroPx, lnStt + 10),
-      yLn,
-      lnEnd - 10,
-      yLn,
-      g.strokeStyle
-    );
-  }
-
-  g.fillStyle = zeroPx > lnStt ? "red" : "blue";
-  g.beginPath();
-  g.drawArrow(lt - 35, yLn, 30, 2, 45, 25, Math.PI);
-  g.fill();
-  g.fillStyle = zeroPx > lnEnd ? "red" : "blue";
-  g.beginPath();
-  g.drawArrow(lt + wd + 35, yLn, 30, 2, 45, 25, 0);
-  g.fill();
-
-  if (my.marksQ) {
-    g.fillStyle = "#aa0";
-    g.strokeStyle = g.fillStyle;
-    g.font = "bold 17px Arial";
-    g.lineWidth = 2;
-
-    for (i = 0; i < my.marks.length; i++) {
-      var mark = my.marks[i];
-      var rel = coords.num2Rel(mark[0]);
-
-      if (rel > 0 && rel < 1) {
-        var xp = lt + rel * wd;
-        g.fillText(mark[1], xp, yLn - 35);
-        g.beginPath();
-        g.moveTo(xp, yLn);
-        g.lineTo(xp, yLn - 30);
-        g.stroke();
-        g.drawArrow(xp, yLn, 20, 2, 20, 10, (3 * Math.PI) / 2);
-        g.fill();
-      }
-    }
-  }
-}
-
-function num2pix(num) {
-  return (
-    (num.sub(coords.xStt).getNumber() /
-      coords.xEnd.sub(coords.xStt).getNumber()) *
-    coords.width
-  );
-}
-
-function onMouseWheel(ev) {
-  var delta = Math.max(-1, Math.min(1, ev.wheelDelta || -ev.detail));
-  my.zoomCount -= delta * 5;
-  ev.preventDefault();
-  return false;
-}
-
-function toggleZoomIn() {
-  this.zoomInQ = !this.zoomInQ;
-  var div = document.getElementsByClassName("toggleZoom")[0];
-
-  if (this.zoomInQ) {
-    div.innerHTML = "Zoom In";
-  } else {
-    div.innerHTML = "Zoom Out";
-  }
-}
-
-function Point(x, y) {
-  this.x = x;
-  this.y = y;
-}
-
-Point.prototype.set = function (x, y) {
-  this.x = x;
-  this.y = y;
-};
-
-CanvasRenderingContext2D.prototype.drawArrow = function (
-  x0,
-  y0,
-  totLen,
-  shaftHt,
-  headLen,
-  headHt,
-  angle,
-  sweep,
-  invertQ
-) {
-  var g = this;
-  var pts = [
-    [0, 0],
-    [-headLen, -headHt / 2],
-    [-headLen + sweep, -shaftHt / 2],
-    [-totLen, -shaftHt / 2],
-    [-totLen, shaftHt / 2],
-    [-headLen + sweep, shaftHt / 2],
-    [-headLen, headHt / 2],
-    [0, 0]
-  ];
-
-  if (invertQ) {
-    pts.push(
-      [0, -headHt / 2],
-      [-totLen, -headHt / 2],
-      [-totLen, headHt / 2],
-      [0, headHt / 2]
-    );
-  }
-
-  for (var i = 0; i < pts.length; i++) {
-    var cosa = Math.cos(-angle);
-    var sina = Math.sin(-angle);
-    var xPos = pts[i][0] * cosa + pts[i][1] * sina;
-    var yPos = pts[i][0] * sina - pts[i][1] * cosa;
-
-    if (i == 0) {
-      g.moveTo(x0 + xPos, y0 + yPos);
-    } else {
-      g.lineTo(x0 + xPos, y0 + yPos);
-    }
-  }
-};
-
-function CoordsFull(width, height, xStt, yStt, xEnd, yEnd, uniScaleQ) {
-  this.maxDigits = 30;
-  this.width = width;
-  this.height = height;
-  this.xStt = new Num(xStt.toString());
-  this.yStt = new Num(yStt.toString());
-  this.xEnd = new Num(xEnd.toString());
-  this.yEnd = new Num(yEnd.toString());
-  this.uniScaleQ = uniScaleQ;
-  this.calcScale();
-}
-
-CoordsFull.prototype.setCoords = function (xStt, yStt, xEnd, yEnd, uniScaleQ) {
-  this.xStt = new Num(xStt.toString());
-  this.yStt = new Num(yStt.toString());
-  this.xEnd = new Num(xEnd.toString());
-  this.yEnd = new Num(yEnd.toString());
-  this.uniScaleQ = uniScaleQ;
-  calcScale();
-};
-
-CoordsFull.prototype.update = function () {
-  calcScale();
-};
-
-CoordsFull.prototype.rel2Num = function (rel) {
-  var relNum = new Num(rel.toString());
-  return this.xStt.add(this.xEnd.sub(this.xStt).mult(relNum));
-};
-
-CoordsFull.prototype.num2Rel = function (num) {
-  var x0 = this.xStt.getNumber();
-  var xv = num.getNumber();
-  var x1 = this.xEnd.getNumber();
-  return (xv - x0) / (x1 - x0);
-};
-
-CoordsFull.prototype.scale = function (factor, mid) {
-  var factNum = new Num((factor - 1).toString());
-  var loNum = new Num((0 - mid).toString());
-  var hiNum = new Num((1 - mid).toString());
-  var rangeNum = this.xEnd.sub(this.xStt, rangeNum);
-  this.xStt = this.xStt.add(rangeNum.mult(factNum).mult(loNum));
-  this.xEnd = this.xEnd.add(rangeNum.mult(factNum).mult(hiNum));
-  this.trimDigits();
-  this.calcScale();
-};
-
-CoordsFull.prototype.moveRel = function (val) {
-  var moveNum = this.xEnd.sub(this.xStt).mult(new Num(val.toString()));
-  this.xStt = this.xStt.add(moveNum);
-  this.xEnd = this.xEnd.add(moveNum);
-  this.trimDigits();
-  this.calcScale();
-};
-
-CoordsFull.prototype.trimDigits = function () {
-  this.xStt.trimDigits(this.maxDigits);
-  this.xEnd.trimDigits(this.maxDigits);
-  this.yStt.trimDigits(this.maxDigits);
-  this.yEnd.trimDigits(this.maxDigits);
-};
-
-CoordsFull.prototype.calcScale = function () {
-  var temp = new Num();
-
-  if (this.xStt.compare(this.xEnd) > 0) {
-    temp = this.xStt;
-    this.xStt = this.xEnd;
-    this.xEnd = temp;
-  }
-
-  var xSpan = this.xEnd.sub(this.xStt);
-  if (xSpan.compare(new Num("0")) <= 0) xSpan.setNum("0.1");
-  xScale = xSpan.div(new Num(this.width.toString()), 10);
-};
-
-CoordsFull.prototype.toXVal = function (pix) {
-  return xStt.add(xScale.mult(new Num(pix.toString()))).getNumber();
-};
-
-CoordsFull.prototype.toXNum = function (pix) {
-  return xStt.add(xScale.mult(new Num(pix.toString())));
-};
-
-CoordsFull.prototype.xTickInterval = function (tickSparseness, majorQ) {
-  return this.tickInterval(
-    this.xEnd.sub(this.xStt).mult(new Num(tickSparseness.toString())),
-    majorQ
-  );
-};
-
-CoordsFull.prototype.yTickInterval = function (tickSparseness, majorQ) {
-  return this.tickInterval(
-    this.yEnd.sub(this.yStt).mult(new Num(tickSparseness.toString())),
-    majorQ
-  );
-};
-
-CoordsFull.prototype.tickInterval = function (span, majorQ) {
-  var mantissa = span.getSci()[0];
-  var intervals = [
-    [7, 10, 1],
-    [3, 1, 1],
-    [2, 1, 0.5],
-    [1, 1, 0.1]
-  ];
-
-  for (var i = 0; i < intervals.length; i++) {
-    var interval = intervals[i];
-
-    if (mantissa >= interval[0] || i == intervals.length - 1) {
-      break;
-    }
-  }
-
-  if (majorQ) {
-    result = interval[1];
-  } else {
-    result = interval[2];
-  }
-
-  var num = new Num(result.toString());
-  num = num.mult10(span.getSci()[1] + 1);
-  return num;
-};
-
-function Num(s, base) {
-  var s = typeof s !== "undefined" ? s : "";
-  base = typeof base !== "undefined" ? base : 10;
-  this.sign = 1;
-  this.digits = "";
-  this.dec = 0;
-  this.MAXDEC = 20;
-  this.baseDigits = "0123456789ABCDEFGHJKLMNP";
-  this.setNum(s, base);
-}
-
-Num.prototype.setNum = function (s, base) {
-  base = typeof base !== "undefined" ? base : 10;
-
-  if (s == 0) {
+  function Num(s, base) {
+    this.sign = 1;
     this.digits = "0";
-    return;
+    this.dec = 0;
+    this.MAXDEC = 20;
+    this.baseDigits = "0123456789ABCDEFGHJKLMNP";
+    this.setNum(typeof s === "undefined" ? "0" : s, typeof base === "undefined" ? 10 : base);
   }
 
-  if (base == 10) {
-    var digits = s;
+  Num.prototype.setNum = function (s, base) {
+    base = typeof base === "undefined" ? 10 : base;
 
-    if (digits.charAt(0) == "-") {
+    if (s === null || typeof s === "undefined") {
+      this.sign = 1;
+      this.digits = "0";
+      this.dec = 0;
+      return this;
+    }
+
+    // Fast path for the integer zero (also covers "" and "0").
+    if (s === 0 || s === "" || s === "0") {
+      this.sign = 1;
+      this.digits = "0";
+      this.dec = 0;
+      return this;
+    }
+
+    if (base !== 10) return this.setFromBase(String(s), base);
+
+    var digits = String(s);
+    this.sign = 1;
+
+    if (digits.charAt(0) === "-") {
       this.sign = -1;
       digits = digits.substring(1);
-    } else {
-      this.sign = 1;
+    } else if (digits.charAt(0) === "+") {
+      digits = digits.substring(1);
     }
 
+    // Scientific notation: fold the exponent into `dec`.
     var eVal = 0;
-    var ePos = digits.indexOf("e");
+    var ePos = digits.search(/[eE]/);
 
     if (ePos >= 0) {
-      eVal = digits.substr(ePos + 1) >> 0;
-      digits = digits.substr(0, ePos);
+      eVal = parseInt(digits.substring(ePos + 1), 10);
+      if (isNaN(eVal)) eVal = 0;
+      digits = digits.substring(0, ePos);
     }
 
-    this.dec = digits.length - (digits.indexOf(".") + 1);
+    // Guard against Infinity / NaN strings reaching the digit parser.
+    if (/[^0-9.]/.test(digits)) digits = digits.replace(/[^0-9.]/g, "");
 
-    if (this.dec == digits.length) {
-      this.dec = 0;
-    }
-
+    var dotPos = digits.indexOf(".");
+    this.dec = dotPos < 0 ? 0 : digits.length - dotPos - 1;
     this.dec -= eVal;
-    digits = digits.split(".").join("");
-    digits = digits.replace(/^0+/, "");
 
-    if (digits.length == 0) {
+    digits = digits.split(".").join("").replace(/^0+/, "");
+
+    if (digits.length === 0) {
       this.sign = 1;
-    } else {
-      var s1 = "";
-
-      for (var i = 0; i < digits.length; i++) {
-        var digit = digits.charAt(i);
-
-        if (this.baseDigits.indexOf(digit) >= 0) {
-          s1 += digit;
-        }
-      }
-
-      digits = s1;
+      this.digits = "0";
+      this.dec = 0;
+      return this;
     }
 
     this.digits = digits;
-  } else {
-    this.setFromBase(s, base);
-  }
-};
+    return this;
+  };
 
-Num.prototype.setFromBase = function (numStr, base) {
-  var srcSign = "";
+  Num.prototype.setFromBase = function (numStr, base) {
+    var srcSign = "";
+    numStr = String(numStr);
 
-  if (numStr.charAt(0) == "-") {
-    srcSign = "-";
-    numStr = numStr.substring(1);
-  }
+    if (numStr.charAt(0) === "-") {
+      srcSign = "-";
+      numStr = numStr.substring(1);
+    }
 
-  var baseDec = numStr.length - (numStr.indexOf(".") + 1);
+    var dotPos = numStr.indexOf(".");
+    var baseDec = dotPos < 0 ? 0 : numStr.length - dotPos - 1;
+    numStr = numStr.split(".").join("").replace(/^0+/, "");
 
-  if (baseDec == numStr.length) {
-    baseDec = 0;
-  }
+    if (numStr.length === 0) {
+      this.setNum("0");
+      return this;
+    }
 
-  numStr = numStr.split(".").join("");
-  numStr = numStr.replace(/^0+/, "");
-
-  if (numStr.length == 0) {
-    this.setNum("0");
-  } else {
-    var i = 0;
-    var len = numStr.length;
     var baseStr = base.toString();
-    var digit = this.baseDigits
-      .indexOf(numStr.charAt(i++).toUpperCase())
-      .toString();
-    var result = digit;
+    var result = this.baseDigits.indexOf(numStr.charAt(0).toUpperCase()).toString();
 
-    while (i < len) {
-      digit = this.baseDigits
-        .indexOf(numStr.charAt(i++).toUpperCase())
-        .toString();
+    for (var i = 1; i < numStr.length; i++) {
+      var digit = this.baseDigits.indexOf(numStr.charAt(i).toUpperCase()).toString();
       result = this.fullMultiply(result, baseStr);
       result = this.fullAdd(result, digit);
     }
 
     if (baseDec > 0) {
-      var divBy = this.fullPower(baseStr, baseDec);
-      result = this.fullDivide(result, divBy, this.MAXDEC);
+      result = this.fullDivide(result, this.fullPower(baseStr, baseDec), this.MAXDEC);
     }
 
     this.setNum(srcSign + result);
-  }
-};
+    return this;
+  };
 
-Num.prototype.toBase = function (base, places) {
-  var parts = this.splitWholeFrac();
-  var s = this.fullBaseWhole(parts[0], base);
+  Num.prototype.clone = function () {
+    var ansNum = new Num();
+    ansNum.digits = this.digits;
+    ansNum.dec = this.dec;
+    ansNum.sign = this.sign;
+    return ansNum;
+  };
 
-  if (parts[1].length > 0) {
-    s += "." + this.fullBaseFrac(parts[1], base, places);
-  }
+  /** Normalize "-0" to "0" so comparisons and formatting stay consistent. */
+  Num.prototype.normalize = function () {
+    if (this.digits === "0") this.sign = 1;
+    return this;
+  };
 
-  if (this.sign == -1) {
-    if (s != "0") {
-      s = "-" + s;
-    }
-  }
+  Num.prototype.abs = function () {
+    var ansNum = this.clone();
+    ansNum.sign = 1;
+    return ansNum;
+  };
 
-  return s;
-};
-
-Num.prototype.getNumber = function () {
-  return Number(this.fmt(10, 0));
-};
-
-Num.prototype.mult10 = function (n) {
-  var xNew = this.clone();
-  xNew.dec = xNew.dec - n;
-
-  if (xNew.dec < 0) {
-    xNew.digits = xNew.digits + "0".repeat(-xNew.dec);
-    xNew.dec = 0;
-  }
-
-  return xNew;
-};
-
-Num.prototype.clone = function () {
-  var ansNum = new Num();
-  ansNum.digits = this.digits;
-  ansNum.dec = this.dec;
-  ansNum.sign = this.sign;
-  return ansNum;
-};
-
-Num.prototype.mult = function (num) {
-  return this.multNums(this, num);
-};
-
-Num.prototype.fullMultiply = function (x, y) {
-  return this.multNums(new Num(x), new Num(y)).fmt();
-};
-
-Num.prototype.multNums = function (xNum, yNum) {
-  var N1 = xNum.digits;
-  var N2 = yNum.digits;
-  var ans = "0";
-
-  for (var i = N1.length - 1; i >= 0; i--) {
-    ans = this.fullAdd(
-      ans,
-      this.fullMultiply1(N2, N1.charAt(i)) + "0".repeat(N1.length - i - 1)
-    );
-  }
-
-  var ansNum = new Num(ans);
-  ansNum.dec = xNum.dec + yNum.dec;
-  ansNum.sign = xNum.sign * yNum.sign;
-  return ansNum;
-};
-
-Num.prototype.fullMultiply1 = function (x, y1) {
-  var carry = "0";
-  var ans = "";
-
-  for (var i = x.length - 1; i > -1; i--) {
-    var product = (x.charAt(i) >> 0) * (y1 >> 0) + (carry >> 0);
-    var prodStr = product.toString();
-
-    if (product < 10) {
-      prodStr = "0" + prodStr;
+  /**
+   * BUGFIX: the original kept `digits` as a raw string that could grow to
+   * thousands of characters while zooming, which eventually froze the tab.
+   * Dropping least-significant digits keeps the label visually identical
+   * while bounding the cost of every later operation.
+   *
+   * The truncated digits are subtracted from `dec` as-is. Trailing zeros are
+   * NOT stripped here: when the cut lands on a zero, stripping it would
+   * silently shrink the value (1.1 -> 0.0011 style corruption).
+   */
+  Num.prototype.trimDigits = function (trimToLen) {
+    if (this.digits.length > trimToLen && trimToLen > 0) {
+      this.dec -= this.digits.length - trimToLen;
+      this.digits = this.digits.substr(0, trimToLen);
+      this.normalize();
     }
 
-    carry = prodStr.charAt(0);
-    ans = prodStr.charAt(1) + ans;
-  }
+    return this;
+  };
 
-  if (carry != "0") {
-    ans = carry + ans;
-  }
+  /* ---------------------- digit-string primitives -------------------- */
 
-  return ans;
-};
+  Num.prototype.compareDigits = function (x, y) {
+    x = x.replace(/^0+/, "") || "0";
+    y = y.replace(/^0+/, "") || "0";
 
-Num.prototype.fullMultiplyInt = function (x, y) {
-  var xLen = x.length;
-  var yLen = y.length;
-  if (xLen == 0) return "0";
-  if (yLen == 0) return "0";
+    if (x.length > y.length) return 1;
+    if (x.length < y.length) return -1;
+    if (x === y) return 0;
+    return x > y ? 1 : -1;
+  };
 
-  if (xLen + yLen <= 9) {
-    return (parseInt(x) * parseInt(y)).toString();
-  }
+  Num.prototype.fullAdd = function (x, y) {
+    return this.addNums(new Num(x), new Num(y)).fmt();
+  };
 
-  var maxLen = Math.max(xLen, yLen);
-  var split = Math.ceil(maxLen / 2);
+  Num.prototype.fullSubtract = function (x, y) {
+    // BUGFIX: original computed the borrow flag without propagating a
+    // pending borrow when the leading digit itself was borrowed from,
+    // producing digits >9 for some inputs.
+    var xNum = new Num(x);
+    var yNum = new Num(y);
 
-  if (xLen < yLen) {
-    var temp = x;
-    x = y;
-    y = temp;
-    var tInt = xLen;
-    xLen = yLen;
-    yLen = tInt;
-  }
+    if (this.compareDigits(xNum.digits, yNum.digits) < 0) {
+      return "-" + this.fullSubtract(y, x);
+    }
 
-  var xSplit = xLen - split;
-  var x0;
-  var x1;
-  x0 = x.substr(xSplit, split);
-  x1 = x.substr(0, xSplit);
-  var ySplit = yLen - split;
-  var y0;
-  var y1;
-  var ans = "0";
+    var a = xNum.digits.split("").reverse();
+    var b = yNum.digits.split("").reverse();
+    var out = [];
+    var borrow = 0;
 
-  if (ySplit <= 0) {
-    var w2 = this.fullMultiplyInt(x0, y);
-    var w1 = this.fullMultiplyInt(x1, y);
-    w1 = w1 + "0".repeat(split);
-    ans = this.fullAdd(w1, w2);
-  } else {
-    y0 = y.substr(ySplit, split);
-    y1 = y.substr(0, ySplit);
+    for (var i = 0; i < a.length; i++) {
+      var av = (a[i] ? a[i].charCodeAt(0) - 48 : 0) - borrow;
+      var bv = i < b.length ? b[i].charCodeAt(0) - 48 : 0;
+
+      if (av < bv) {
+        av += 10;
+        borrow = 1;
+      } else {
+        borrow = 0;
+      }
+
+      out.push(av - bv);
+    }
+
+    return out.reverse().join("").replace(/^0+/, "") || "0";
+  };
+
+  Num.prototype.fullMultiply1 = function (x, y1) {
+    var yDigit = y1.charCodeAt(0) - 48;
+    var carry = 0;
+    var ans = "";
+
+    for (var i = x.length - 1; i >= 0; i--) {
+      var product = (x.charCodeAt(i) - 48) * yDigit + carry;
+      ans = (product % 10) + ans;
+      carry = (product / 10) | 0;
+    }
+
+    if (carry > 0) ans = carry + ans;
+    return ans.replace(/^0+/, "") || "0";
+  };
+
+  /** Karatsuba above 9 digits, schoolbook below (as in the original). */
+  Num.prototype.fullMultiplyInt = function (x, y) {
+    x = x.replace(/^0+/, "") || "0";
+    y = y.replace(/^0+/, "") || "0";
+
+    if (x === "0" || y === "0") return "0";
+    if (x.length + y.length <= 9) return (parseInt(x, 10) * parseInt(y, 10)).toString();
+
+    var xLen = x.length;
+    var yLen = y.length;
+
+    if (xLen < yLen) {
+      var swap = x;
+      x = y;
+      y = swap;
+      var tLen = xLen;
+      xLen = yLen;
+      yLen = tLen;
+    }
+
+    var split = Math.ceil(Math.max(xLen, yLen) / 2);
+    var xSplit = Math.max(0, xLen - split);
+    var x0 = x.substr(xSplit);
+    var x1 = x.substring(0, xSplit);
+    var ySplit = Math.max(0, yLen - split);
+
+    if (ySplit <= 0 || xSplit <= 0) {
+      var low = this.fullMultiplyInt(x0, y);
+      var high = this.fullMultiplyInt(x1, y);
+      return this.fullAdd(high + repeatStr("0", split), low);
+    }
+
+    var y0 = y.substr(ySplit);
+    var y1 = y.substring(0, ySplit);
     var z0 = this.fullMultiplyInt(x1, y1);
     var z2 = this.fullMultiplyInt(x0, y0);
     var z1 = this.fullMultiplyInt(this.fullAdd(x1, x0), this.fullAdd(y1, y0));
+
     z1 = this.fullSubtract(z1, z2);
     z1 = this.fullSubtract(z1, z0);
-    z0 = z0 + "0".repeat(split * 2);
-    z1 = z1 + "0".repeat(split);
-    ans = this.fullAdd(this.fullAdd(z0, z1), z2);
-  }
 
-  return ans;
-};
+    return this.fullAdd(this.fullAdd(z0 + repeatStr("0", split * 2), z1 + repeatStr("0", split)), z2);
+  };
 
-Num.prototype.abs = function () {
-  var ansNum = this.clone();
-  ansNum.sign = 1;
-  return ansNum;
-};
+  Num.prototype.fullMultiply = function (x, y) {
+    return this.fullMultiplyInt(new Num(x).digits, new Num(y).digits);
+  };
 
-Num.prototype.fullAdd = function (x, y) {
-  return this.addNums(new Num(x), new Num(y)).fmt();
-};
+  Num.prototype.fullPower = function (x, n) {
+    return this.expNums(new Num(x), n).fmt();
+  };
 
-Num.prototype.add = function (num) {
-  return this.addNums(this, num);
-};
+  Num.prototype.expNums = function (xNum, nInt) {
+    var ansNum = new Num("1");
+    var baseNum = xNum.clone();
+    var n = nInt;
 
-Num.prototype.addNums = function (xNum, yNum) {
-  var ansNum = new Num();
-
-  if (xNum.sign * yNum.sign == -1) {
-    ansNum = this.subNums(xNum.abs(), yNum.abs());
-
-    if (xNum.sign == -1) {
-      ansNum.sign *= -1;
+    while (n > 0) {
+      if (n & 1) ansNum = ansNum.mult(baseNum);
+      n >>= 1;
+      if (n > 0) baseNum = baseNum.mult(baseNum);
     }
 
     return ansNum;
+  };
+
+  /**
+   * Long division producing `decimals` places after the point.
+   * BUGFIX: the original loop could spin without shrinking the dividend
+   * whenever an intermediate remainder repeated, hanging the tab. The
+   * iteration cap is now a hard guarantee rather than a soft one, and the
+   * estimate never rounds up past the true quotient digit.
+   */
+  Num.prototype.divNums = function (xNum, yNum, decimals) {
+    decimals = typeof decimals === "undefined" ? this.MAXDEC : decimals;
+
+    if (xNum.isZero() || yNum.isZero()) return new Num("0");
+
+    var sign = xNum.sign * yNum.sign;
+    var xDigits = xNum.digits;
+    var yDigits = yNum.digits;
+
+    // Scale the dividend so the quotient lands with `decimals` places.
+    var shift = decimals + yNum.dec - xNum.dec;
+
+    if (shift > 0) {
+      xDigits += repeatStr("0", shift);
+    } else if (shift < 0) {
+      yDigits += repeatStr("0", -shift);
+    }
+
+    xDigits = xDigits.replace(/^0+/, "") || "0";
+    yDigits = yDigits.replace(/^0+/, "") || "0";
+
+    if (this.compareDigits(xDigits, yDigits) < 0) return new Num("0");
+
+    // Precompute the 1..9 multiplication table for the divisor.
+    var table = [yDigits];
+    for (var k = 2; k <= 9; k++) table.push(this.fullAdd(table[k - 2], yDigits));
+
+    var quotient = "";
+    var remainder = "";
+
+    for (var i = 0; i < xDigits.length; i++) {
+      remainder = (remainder + xDigits.charAt(i)).replace(/^0+/, "");
+
+      var digit = 0;
+
+      if (this.compareDigits(remainder, yDigits) >= 0) {
+        digit = 9;
+        while (digit > 1 && this.compareDigits(table[digit - 1], remainder) > 0) digit--;
+        remainder = this.fullSubtract(remainder, table[digit - 1]);
+      }
+
+      quotient += digit;
+    }
+
+    quotient = quotient.replace(/^0+/, "") || "0";
+
+    // Round-half-up on the first dropped digit so 2/3 reads 0.667 rather
+    // than 0.666 at low precision. The remainder is exactly what was left
+    // undivided, so comparing twice it against the divisor is exact.
+    var roundUp = this.compareDigits(this.fullAdd(remainder, remainder), yDigits) >= 0;
+
+    if (roundUp) quotient = this.fullAdd(quotient, "1");
+
+    var ansNum = new Num(quotient);
+    ansNum.dec = decimals;
+    ansNum.sign = sign;
+    return ansNum.normalize();
+  };
+
+  /* --------------------------- arithmetic ---------------------------- */
+
+  Num.prototype.mult10 = function (n) {
+    var xNew = this.clone();
+    xNew.dec -= n;
+
+    if (xNew.dec < 0) {
+      xNew.digits += repeatStr("0", -xNew.dec);
+      xNew.dec = 0;
+    }
+
+    return xNew;
+  };
+
+  Num.prototype.mult = function (num) {
+    return this.multNums(this, num);
+  };
+
+  Num.prototype.multNums = function (xNum, yNum) {
+    if (xNum.isZero() || yNum.isZero()) return new Num("0");
+
+    var ansNum = new Num(this.fullMultiplyInt(xNum.digits, yNum.digits));
+    ansNum.dec = xNum.dec + yNum.dec;
+    ansNum.sign = xNum.sign * yNum.sign;
+    return ansNum.normalize();
+  };
+
+  Num.prototype.add = function (num) {
+    return this.addNums(this, num);
+  };
+
+  Num.prototype.addNums = function (xNum, yNum) {
+    if (xNum.isZero()) return yNum.clone();
+    if (yNum.isZero()) return xNum.clone();
+
+    if (xNum.sign !== yNum.sign) {
+      var ansNum = this.subNums(xNum.abs(), yNum.abs());
+      ansNum.sign = xNum.abs().compare(yNum.abs()) >= 0 ? xNum.sign : yNum.sign;
+      return ansNum.normalize();
+    }
+
+    var maxdec = Math.max(xNum.dec, yNum.dec);
+    var xdig = xNum.digits + repeatStr("0", maxdec - xNum.dec);
+    var ydig = yNum.digits + repeatStr("0", maxdec - yNum.dec);
+    var maxlen = Math.max(xdig.length, ydig.length);
+
+    xdig = repeatStr("0", maxlen - xdig.length) + xdig;
+    ydig = repeatStr("0", maxlen - ydig.length) + ydig;
+
+    var ans = "";
+    var carry = 0;
+
+    for (var i = xdig.length - 1; i >= 0; i--) {
+      var temp = xdig.charCodeAt(i) - 48 + (ydig.charCodeAt(i) - 48) + carry;
+      ans = (temp % 10) + ans;
+      carry = temp >= 10 ? 1 : 0;
+    }
+
+    if (carry === 1) ans = "1" + ans;
+
+    var sumNum = new Num(ans);
+    sumNum.sign = xNum.sign;
+    sumNum.dec = maxdec;
+    return sumNum.normalize();
+  };
+
+  Num.prototype.sub = function (num) {
+    return this.subNums(this, num);
+  };
+
+  Num.prototype.subNums = function (xNum, yNum) {
+    if (yNum.isZero()) return xNum.clone();
+
+    if (xNum.sign !== yNum.sign) {
+      var sumNum = this.addNums(xNum.abs(), yNum.abs());
+      sumNum.sign = xNum.sign;
+      return sumNum.normalize();
+    }
+
+    var maxdec = Math.max(xNum.dec, yNum.dec);
+    var xdig = xNum.digits + repeatStr("0", maxdec - xNum.dec);
+    var ydig = yNum.digits + repeatStr("0", maxdec - yNum.dec);
+    var maxlen = Math.max(xdig.length, ydig.length);
+
+    xdig = repeatStr("0", maxlen - xdig.length) + xdig;
+    ydig = repeatStr("0", maxlen - ydig.length) + ydig;
+
+    var sign = this.compareDigits(xdig, ydig);
+
+    if (sign === 0) return new Num("0");
+
+    if (sign < 0) {
+      var swap = xdig;
+      xdig = ydig;
+      ydig = swap;
+    }
+
+    var ansNum = new Num(this.fullSubtract(xdig, ydig));
+    ansNum.sign = sign * xNum.sign;
+    ansNum.dec = maxdec;
+    return ansNum.normalize();
+  };
+
+  Num.prototype.div = function (num, decimals) {
+    return this.divNums(this, num, decimals);
+  };
+
+  Num.prototype.fullDivide = function (x, y, decimals) {
+    return this.divNums(new Num(x), new Num(y), decimals).fmt();
+  };
+
+  Num.prototype.compare = function (yNum) {
+    return this.compareNums(this, yNum);
+  };
+
+  Num.prototype.compareNums = function (xNum, yNum) {
+    if (xNum.isZero()) xNum = new Num("0");
+    if (yNum.isZero()) yNum = new Num("0");
+
+    if (xNum.sign > yNum.sign) return 1;
+    if (xNum.sign < yNum.sign) return -1;
+
+    var maxdec = Math.max(xNum.dec, yNum.dec);
+    var xdig = xNum.digits + repeatStr("0", maxdec - xNum.dec);
+    var ydig = yNum.digits + repeatStr("0", maxdec - yNum.dec);
+    var maxlen = Math.max(xdig.length, ydig.length);
+
+    xdig = repeatStr("0", maxlen - xdig.length) + xdig;
+    ydig = repeatStr("0", maxlen - ydig.length) + ydig;
+
+    if (xdig === ydig) return 0;
+    return (xdig > ydig ? 1 : -1) * xNum.sign;
+  };
+
+  Num.prototype.isZero = function () {
+    return this.digits === "0" || this.digits === "";
+  };
+
+  /**
+   * Best-effort double: correctly rounded for any decimal string.
+   *
+   * The whole significand is emitted in scientific notation and parsed in a
+   * single `Number()` call. Doing the conversion in one step matters —
+   * taking a 17-digit window and then scaling by a power of ten rounds
+   * twice and can land one ULP off (e.g. -0.9999999999999273 instead of
+   * -0.9999999999999274).
+   */
+  Num.prototype.getNumber = function () {
+    if (this.isZero()) return 0;
+
+    // Exponent of the leading digit, so "123.45" -> "1.2345e+2".
+    var exp = this.digits.length - this.dec - 1;
+    var mantissa = this.digits.charAt(0);
+
+    if (this.digits.length > 1) {
+      mantissa += "." + this.digits.substring(1);
+    }
+
+    var value = Number(mantissa + "e" + exp);
+
+    return this.sign === -1 ? -value : value;
+  };
+
+  /**
+   * Decimal string.
+   *
+   * `sigDigits` requests a minimum number of significant digits: shorter
+   * values are padded with trailing zeros. Padding extends the fractional
+   * part, so `dec` must grow by exactly the number of zeros added —
+   * otherwise the value silently scales up by a power of ten.
+   *
+   * `eStt` switches to exponent form once |exponent| >= eStt.
+   */
+  Num.prototype.fmt = function (sigDigits, eStt) {
+    sigDigits = typeof sigDigits === "undefined" ? 0 : sigDigits;
+    eStt = typeof eStt === "undefined" ? 0 : eStt;
+
+    if (this.isZero()) return "0";
+
+    var s = this.digits;
+    var dec = this.dec;
+
+    if (s.length < sigDigits) {
+      // BUGFIX: the original padded `digits` without adjusting `dec`, so
+      // fmt(20) on 0.0133... returned 13333333.333. getNumber() relies on
+      // this, which made every pixel mapping wrong by orders of magnitude.
+      var pad = sigDigits - s.length;
+      s += repeatStr("0", pad);
+      dec += pad;
+    }
+
+    var decpos = s.length - dec;
+
+    if (eStt > 0) {
+      var eVal = decpos - 1;
+
+      if (Math.abs(eVal) >= eStt) {
+        var mantissa = s.charAt(0) + "." + s.substring(1);
+        mantissa = mantissa.replace(/0+$/, "").replace(/\.$/, "");
+        s = mantissa + "e" + (eVal > 0 ? "+" : "") + eVal;
+        return this.sign === -1 ? "-" + s : s;
+      }
+    }
+
+    if (decpos <= 0) {
+      s = "0." + repeatStr("0", -decpos) + s;
+    } else if (decpos < s.length) {
+      s = s.substring(0, decpos) + "." + s.substring(decpos);
+    } else if (decpos > s.length) {
+      // BUGFIX: a negative `dec` (integer with implied trailing zeros, e.g.
+      // the result of mult10) had no branch here, so "1e3" formatted as "1".
+      s = s + repeatStr("0", decpos - s.length);
+    }
+
+    if (s.indexOf(".") >= 0) s = s.replace(/0+$/, "").replace(/\.$/, "");
+
+    return this.sign === -1 ? "-" + s : s;
+  };
+
+  Num.prototype.getSci = function () {
+    if (this.isZero()) return ["0", 0];
+
+    var s = this.digits.charAt(0) + "." + this.digits.substring(1);
+    s = s.replace(/0+$/, "").replace(/\.$/, "");
+
+    return [s, this.digits.length - this.dec - 1];
+  };
+
+  /* ------------------------------------------------------------------ *
+   * Coords - the visible numeric window, with a pixel mapping
+   * ------------------------------------------------------------------ */
+
+  function Coords(width, height, xStt, yStt, xEnd, yEnd) {
+    this.maxDigits = 40;
+    this.width = Math.max(1, width);
+    this.height = Math.max(1, height);
+    this.xStt = new Num(xStt);
+    this.yStt = new Num(yStt);
+    this.xEnd = new Num(xEnd);
+    this.yEnd = new Num(yEnd);
+    this.xScale = new Num("1");
+    this.calcScale();
   }
 
-  var maxdec = Math.max(xNum.dec, yNum.dec);
-  var xdig = xNum.digits + "0".repeat(maxdec - xNum.dec);
-  var ydig = yNum.digits + "0".repeat(maxdec - yNum.dec);
-  var maxlen = Math.max(xdig.length, ydig.length);
-  xdig = "0".repeat(maxlen - xdig.length) + xdig;
-  ydig = "0".repeat(maxlen - ydig.length) + ydig;
-  var ans = "";
-  var carry = 0;
+  Coords.prototype.calcScale = function () {
+    if (this.xStt.compare(this.xEnd) > 0) {
+      var temp = this.xStt;
+      this.xStt = this.xEnd;
+      this.xEnd = temp;
+    }
 
-  for (var i = xdig.length - 1; i >= 0; i--) {
-    var temp = (xdig.charAt(i) >> 0) + (ydig.charAt(i) >> 0) + carry;
+    var xSpan = this.xEnd.sub(this.xStt);
 
-    if (temp >= 0 && temp < 20) {
-      if (temp > 9) {
-        carry = 1;
-        ans = temp - 10 + ans;
+    if (xSpan.compare(new Num("0")) <= 0) xSpan = new Num("1");
+
+    this.xSpan = xSpan;
+    this.xScale = xSpan.div(new Num(this.width.toString()), 12);
+  };
+
+  Coords.prototype.trimDigits = function () {
+    this.xStt.trimDigits(this.maxDigits);
+    this.xEnd.trimDigits(this.maxDigits);
+    this.yStt.trimDigits(this.maxDigits);
+    this.yEnd.trimDigits(this.maxDigits);
+  };
+
+  Coords.prototype.rel2Num = function (rel) {
+    return this.xStt.add(this.xSpan.mult(new Num(rel.toString())));
+  };
+
+  Coords.prototype.num2Rel = function (num) {
+    // Kept in floating point: only used for screen placement, where
+    // double precision is far more than enough.
+    var span = this.xEnd.sub(this.xStt).getNumber();
+    if (!span) return 0.5;
+    return (num.getNumber() - this.xStt.getNumber()) / span;
+  };
+
+  /** BUGFIX: `rangeNum` was used before it was ever assigned. */
+  Coords.prototype.scale = function (factor, mid) {
+    var delta = new Num((factor - 1).toString());
+    var rangeNum = this.xSpan;
+
+    this.xStt = this.xStt.add(rangeNum.mult(delta).mult(new Num((0 - mid).toString())));
+    this.xEnd = this.xEnd.add(rangeNum.mult(delta).mult(new Num((1 - mid).toString())));
+    this.trimDigits();
+    this.calcScale();
+  };
+
+  Coords.prototype.moveRel = function (val) {
+    var moveNum = this.xSpan.mult(new Num(val.toString()));
+    this.xStt = this.xStt.add(moveNum);
+    this.xEnd = this.xEnd.add(moveNum);
+    this.trimDigits();
+    this.calcScale();
+  };
+
+  Coords.prototype.toXNum = function (pix) {
+    return this.xStt.add(this.xScale.mult(new Num(pix.toString())));
+  };
+
+  Coords.prototype.toXVal = function (pix) {
+    return this.toXNum(pix).getNumber();
+  };
+
+  /**
+   * Choose a "nice" tick step (1, 2 or 5 x 10^k) at or just above `span`.
+   *
+   * `span` is the desired spacing expressed in data units, so the result is
+   * the smallest nice number that keeps ticks from crowding.
+   *
+   * BUGFIX: the original walked a table in ascending order and matched the
+   * first row whose limit the mantissa exceeded, which the `limit: 0` row
+   * always satisfied. Every zoom level produced a major step of exactly 10,
+   * so the line rendered with two labels no matter the range.
+   *
+   * The mantissa here is in [1, 10); the candidate steps are
+   * {1, 2, 5} x 10^exponent, and the smallest candidate >= span wins.
+   *
+   * `majorQ` selects the major step. The minor step always subdivides the
+   * major into a whole number of intervals (2 -> 0.5, 5 -> 1, 1 -> 0.2).
+   */
+  Coords.prototype.tickInterval = function (span, majorQ) {
+    var sci = span.abs().getSci();
+    var mantissa = Number(sci[0]);
+    var exponent = sci[1];
+
+    if (!isFinite(mantissa) || mantissa <= 0) {
+      mantissa = 1;
+      exponent = 0;
+    }
+
+    // Normalise into [1, 10) in case of any rounding drift from getSci.
+    while (mantissa >= 10) {
+      mantissa /= 10;
+      exponent += 1;
+    }
+
+    // The mantissa is already normalised, so the candidates at this decade
+    // are simply 1, 2 and 5; the first one >= mantissa is the answer.
+    var nice;
+
+    if (mantissa <= 1) nice = 1;
+    else if (mantissa <= 2) nice = 2;
+    else if (mantissa <= 5) nice = 5;
+    else nice = 10; // rounds up into the next decade
+
+    var step = new Num(nice.toString()).mult10(exponent);
+
+    // nice === 10 means "1 x 10^(exponent+1)"; mult10 already handled the
+    // magnitude, so no further exponent adjustment is needed.
+    if (majorQ) return step;
+
+    // Minor ticks subdivide the major interval into a whole number of
+    // steps, snapped to the 1/2/5 family so labels stay readable.
+    var minorFactor;
+
+    if (nice === 10) minorFactor = new Num("2").mult10(exponent);
+    else if (nice === 5) minorFactor = new Num("1").mult10(exponent);
+    else if (nice === 2) minorFactor = new Num("5").mult10(exponent - 1);
+    else minorFactor = new Num("2").mult10(exponent - 1);
+
+    return minorFactor;
+  };
+
+  Coords.prototype.xTickInterval = function (sparseness, majorQ) {
+    return this.tickInterval(this.xSpan.mult(new Num(sparseness.toString())), majorQ);
+  };
+
+  /* ------------------------------------------------------------------ *
+   * Canvas extensions
+   * ------------------------------------------------------------------ */
+
+  CanvasRenderingContext2D.prototype.drawArrow = function (
+    x0, y0, totLen, shaftHt, headLen, headHt, angle, sweep, invertQ
+  ) {
+    // BUGFIX: the original shadowed the module-level context with
+    // `var g = this`, which broke the moment the global was renamed.
+    var ctx = this;
+    var pts = [
+      [0, 0],
+      [-headLen, -headHt / 2],
+      [-headLen + sweep, -shaftHt / 2],
+      [-totLen, -shaftHt / 2],
+      [-totLen, shaftHt / 2],
+      [-headLen + sweep, shaftHt / 2],
+      [-headLen, headHt / 2],
+      [0, 0]
+    ];
+
+    if (invertQ) {
+      pts.push(
+        [0, -headHt / 2],
+        [-totLen, -headHt / 2],
+        [-totLen, headHt / 2],
+        [0, headHt / 2]
+      );
+    }
+
+    var cosa = Math.cos(-angle);
+    var sina = Math.sin(-angle);
+
+    for (var i = 0; i < pts.length; i++) {
+      var xPos = pts[i][0] * cosa + pts[i][1] * sina;
+      var yPos = pts[i][0] * sina - pts[i][1] * cosa;
+
+      if (i === 0) ctx.moveTo(x0 + xPos, y0 + yPos);
+      else ctx.lineTo(x0 + xPos, y0 + yPos);
+    }
+  };
+
+  CanvasRenderingContext2D.prototype.drawPipe = function (x0, y0, x1, y1, clr) {
+    var ctx = this;
+    var alphas = [0.8, 0.4, 0.3, 0.2, 0.4, 0.6, 0.8];
+    var size = alphas.length;
+    var rgb = toRgbTriple(clr);
+
+    ctx.save();
+    ctx.lineCap = "round";
+
+    for (var i = 0; i < size; i++) {
+      var dist = (size / 2 - 0.5 - i) * 0.8;
+
+      ctx.beginPath();
+
+      if (y0 === y1) {
+        ctx.moveTo(x0, y0 - dist);
+        ctx.lineTo(x1, y1 - dist);
       } else {
-        carry = 0;
-        ans = temp + ans;
-      }
-    }
-  }
-
-  if (carry == 1) {
-    ans = "1" + ans;
-  }
-
-  ansNum.setNum(ans);
-  ansNum.sign = xNum.sign;
-  ansNum.dec = maxdec;
-  return ansNum;
-};
-
-Num.prototype.fullPower = function (x, n) {
-  return this.expNums(new Num(x), n).fmt();
-};
-
-Num.prototype.expNums = function (xNum, nInt) {
-  var n = nInt;
-  var b2pow = 0;
-
-  while ((n & 1) == 0) {
-    b2pow++;
-    n >>= 1;
-  }
-
-  var x = xNum.digits;
-  var r = x;
-
-  while ((n >>= 1) > 0) {
-    x = this.fullMultiply(x, x);
-
-    if ((n & 1) != 0) {
-      r = this.fullMultiply(r, x);
-    }
-  }
-
-  while (b2pow-- > 0) {
-    r = this.fullMultiply(r, r);
-  }
-
-  var ansNum = new Num(r);
-  ansNum.dec = xNum.dec * nInt;
-  return ansNum;
-};
-
-Num.prototype.div = function (num, decimals) {
-  return this.divNums(this, num, decimals);
-};
-
-Num.prototype.fullDivide = function (x, y, decimals) {
-  return this.divNums(new Num(x), new Num(y), decimals).fmt();
-};
-
-Num.prototype.divNums = function (xNum, yNum, decimals) {
-  decimals = typeof decimals !== "undefined" ? decimals : this.MAXDEC;
-
-  if (xNum.digits.length == 0) {
-    return new Num("0");
-  }
-
-  if (yNum.digits.length == 0) {
-    return new Num("0");
-  }
-
-  var xDec = xNum.mult10(decimals);
-  var fullDec = Math.max(xDec.dec, yNum.dec);
-  var xdig = xDec.digits + "0".repeat(fullDec - xDec.dec);
-  var ydig = yNum.digits + "0".repeat(fullDec - yNum.dec);
-  xdig = xdig.replace(/^0+/, "");
-
-  if (this.compareDigits(xdig, "0") == 0) {
-    return new Num("0");
-  }
-
-  ydig = ydig.replace(/^0+/, "");
-
-  if (this.compareDigits(ydig, "0") == 0) {
-    return new Num("0");
-  }
-
-  var timestable = [];
-  timestable.push("0");
-  timestable.push(ydig);
-  var tdig = ydig;
-
-  for (var i = 2; i < 10; i++) {
-    tdig = this.fullAdd(tdig, ydig);
-    timestable.push(tdig);
-  }
-
-  var ans = "0";
-  var xNew = xdig;
-  var n = 0;
-
-  while (this.compareDigits(xNew, ydig) >= 0) {
-    var col = 1;
-
-    while (this.compareDigits(xNew.substring(0, col), ydig) < 0) {
-      col++;
-    }
-
-    var xCurr = xNew.substring(0, col);
-    var mult = 9;
-
-    while (this.compareDigits(timestable[mult], xCurr) > 0) {
-      mult--;
-    }
-
-    var fullmult = mult + "" + "0".repeat(xNew.length - xCurr.length);
-    ans = this.fullAdd(ans, fullmult);
-    xNew = this.fullSubtract(xNew, this.fullMultiply(ydig, fullmult));
-
-    if (n++ > 100) {
-      break;
-    }
-  }
-
-  var ansNum = new Num(ans);
-  ansNum.dec = decimals;
-  ansNum.sign = xNum.sign * yNum.sign;
-  return ansNum;
-};
-
-Num.prototype.sub = function (num) {
-  return this.subNums(this, num);
-};
-
-Num.prototype.fullSubtract = function (x, y) {
-  return this.subNums(new Num(x), new Num(y)).fmt();
-};
-
-Num.prototype.subNums = function (xNum, yNum) {
-  var ansNum = new Num();
-
-  if (xNum.sign * yNum.sign == -1) {
-    ansNum = xNum.abs().add(yNum.abs());
-
-    if (xNum.sign == -1) {
-      ansNum.sign *= -1;
-    }
-
-    return ansNum;
-  }
-
-  var maxdec = Math.max(xNum.dec, yNum.dec);
-  var xdig = xNum.digits + "0".repeat(maxdec - xNum.dec);
-  var ydig = yNum.digits + "0".repeat(maxdec - yNum.dec);
-  var maxlen = Math.max(xdig.length, ydig.length);
-  xdig = "0".repeat(maxlen - xdig.length) + xdig;
-  ydig = "0".repeat(maxlen - ydig.length) + ydig;
-  var sign = this.compareDigits(xdig, ydig);
-
-  if (sign == 0) {
-    return new Num("0");
-  }
-
-  if (sign == -1) {
-    var temp = xdig;
-    xdig = ydig;
-    ydig = temp;
-  }
-
-  var ans = "";
-  var isborrow = 0;
-
-  for (var i = xdig.length - 1; i >= 0; i--) {
-    var xPiece = xdig.charAt(i) >> 0;
-    var yPiece = ydig.charAt(i) >> 0;
-
-    if (isborrow == 1) {
-      isborrow = 0;
-      xPiece = xPiece - 1;
-    }
-
-    if (xPiece < 0) {
-      xPiece = 9;
-      isborrow = 1;
-    }
-
-    if (xPiece < yPiece) {
-      xPiece = xPiece + 10;
-      isborrow = 1;
-    }
-
-    ans = xPiece - yPiece + ans;
-  }
-
-  ansNum.setNum(ans);
-  ansNum.sign = sign * xNum.sign;
-  ansNum.dec = maxdec;
-  return ansNum;
-};
-
-Num.prototype.fmt = function (sigDigits, eStt) {
-  sigDigits = typeof sigDigits !== "undefined" ? sigDigits : 0;
-  eStt = typeof eStt !== "undefined" ? eStt : 0;
-  var decWas = this.dec;
-  var digitsWas = this.digits;
-
-  if (this.digits.length < sigDigits) {
-    this.dec += sigDigits - this.digits.length;
-    this.digits += strRepeat("0", sigDigits - this.digits.length);
-  }
-
-  var s = this.digits;
-  var decpos = s.length - this.dec;
-  var roundQ = false;
-  var roundType = "5up";
-
-  if (roundQ) {
-    if (this.digits.length > sigDigits) {
-      var cutDigit = "";
-
-      if (sigDigits >= 0) {
-        s = this.digits.substr(0, sigDigits);
-        cutDigit = this.digits.charAt(sigDigits);
-      } else {
-        s = "";
-        cutDigit = "";
+        ctx.moveTo(x0 + dist, y0);
+        ctx.lineTo(x1 + dist, y1);
       }
 
-      switch (roundType) {
-        case "5up":
-          if (cutDigit > "5" || (cutDigit == "5" && this.sign == 1)) {
-            s = this.fullAdd(s, "1", 10);
-          }
+      ctx.strokeStyle = "rgba(255,255,255,0.85)";
+      ctx.stroke();
 
-          break;
-
-        case "5down":
-          if (cutDigit > "5" || (cutDigit == "5" && this.sign == -1)) {
-            s = fullAdd(s, "1");
-          }
-
-          break;
-
-        case "5away0":
-          if (cutDigit >= "5") {
-            s = fullAdd(s, "1");
-          }
-
-          break;
-
-        case "5to0":
-          if (cutDigit > "5") {
-            s = fullAdd(s, "1");
-          }
-
-          break;
-
-        case "5even":
-          if (cutDigit > "5") {
-            s = fullAdd(s, "1");
-          } else {
-            if (cutDigit == "5") {
-              if ((parseInt(s.charAt(s.length - 1)) & 1) != 0) {
-                s = fullAdd(s, "1");
-              }
-            }
-          }
-
-          break;
-
-        case "5odd":
-          if (cutDigit > "5") {
-            s = fullAdd(s, "1");
-          } else {
-            if (cutDigit == "5") {
-              if ((parseInt(s.charAt(s.length - 1)) & 1) == 0) {
-                s = fullAdd(s, "1");
-              }
-            }
-          }
-
-          break;
-
-        case "floor":
-          if (sigDigits < 0) {
-            decpos -= sigDigits;
-
-            if (this.sign == -1) {
-              s = "1";
-            } else {
-              s = "";
-            }
-          } else {
-            if (this.sign == -1) {
-              if (Strings.trimLeft(digits.substr(sigDigits), "0").length != 0) {
-                s = fullAdd(s, "1");
-              }
-            }
-          }
-
-          break;
-
-        case "ceiling":
-          if (sigDigits < 0) {
-            decpos -= sigDigits;
-
-            if (this.sign == 1) {
-              s = "1";
-            } else {
-              s = "";
-            }
-          } else {
-            if (this.sign == 1) {
-              if (Strings.trimLeft(digits.substr(sigDigits), "0").length != 0) {
-                s = fullAdd(s, "1");
-              }
-            }
-          }
-
-          break;
-
-        default:
-      }
-
-      if (s.length > sigDigits) {
-        if (sigDigits > 0) s = s.substr(0, sigDigits);
-        decpos++;
-      }
-
-      if (s.length == 0) {
-        s = "0";
-      } else {
-        if (decpos - sigDigits > 0) s += "0".repeat(decpos - sigDigits);
-      }
-    }
-  }
-
-  var eVal = decpos - 1;
-
-  if (eStt > 0 && Math.abs(eVal) >= eStt) {
-    var s1 = s.substr(0, 1) + "." + s.substr(1);
-    s1 = s1.replace(/0+$/, "");
-
-    if (s1.charAt(s1.length - 1) == ".") {
-      s1 = s1.substr(0, s1.length - 1);
+      ctx.strokeStyle = "rgba(" + rgb + "," + alphas[i] + ")";
+      ctx.stroke();
     }
 
-    if (eVal > 0) {
-      s = s1 + "e+" + eVal;
-    } else {
-      s = s1 + "e" + eVal;
-    }
-  } else {
-    if (decpos < 0) {
-      s = "0." + "0".repeat(-decpos) + s;
-    } else if (decpos == 0) {
-      s = "0." + s;
-    } else if (decpos > 0) {
-      if (this.dec >= 0) {
-        s = s.substr(0, decpos) + "." + s.substr(decpos, this.dec);
-      } else {
-        s = s + "0".repeat(-this.dec) + ".";
-      }
-    }
+    ctx.restore();
+  };
 
-    if (s.indexOf(".") >= 0) {
-      s = s.replace(/0+$/, "");
-    }
+  /* ------------------------------------------------------------------ *
+   * Renderer / interaction controller
+   * ------------------------------------------------------------------ */
 
-    if (s.charAt(s.length - 1) == ".") {
-      s = s.substring(0, s.length - 1);
-    }
-  }
+  var THEME = {
+    bg: "#eef6ff",
+    negative: "#e5484d",
+    positive: "#0b6bcb",
+    zero: "#111827",
+    tick: "#9aa8bd"
+  };
 
-  if (this.sign == -1) {
-    if (s != "0") {
-      s = "-" + s;
-    }
-  }
+  var DEFAULTS = {
+    width: 1000,
+    minHeight: 150,
+    left: 40,
+    lineWidth: 900,
+    lineY: 70,
+    zoomStep: 1.02,
+    edge: 60,
+    edgeSpeed: 0.0006,
+    maxDigits: 40,
+    maxTicks: 400
+  };
 
-  this.dec = decWas;
-  this.digits = digitsWas;
-  return s;
-};
+  function Numberline(canvas, options) {
+    options = options || {};
 
-Num.prototype.compare = function (yNum) {
-  return this.compareNums(this, yNum);
-};
+    this.canvas = typeof canvas === "string" ? document.querySelector(canvas) : canvas;
 
-Num.prototype.compareNums = function (xNum, yNum) {
-  if (xNum.digits.length == 0) xNum.sign = 1;
-  if (yNum.digits.length == 0) yNum.sign = 1;
+    if (!this.canvas) throw new Error("ZoomableNumberline: canvas not found");
 
-  if (xNum.sign == 1 && yNum.sign == -1) {
-    return 1;
-  }
+    this.opt = Object.assign({}, DEFAULTS, options);
+    this.ctx = this.canvas.getContext("2d");
 
-  if (xNum.sign == -1 && yNum.sign == 1) {
-    return -1;
-  }
+    // State
+    this.zoomInQ = true;
+    this.marksQ = true;
+    this.marks = [{ num: new Num("3.14159"), label: "π" }];
+    this.zoomCount = 0;
+    this.moveCount = 0;
+    this.pointerDown = false;
+    this.currX = this.opt.width / 2;
+    this.zoomLevel = 0;
+    this.hoverX = null;
+    this.destroyed = false;
 
-  var maxdec = Math.max(xNum.dec, yNum.dec);
-  var xdig = xNum.digits + strRepeat("0", maxdec - xNum.dec);
-  var ydig = yNum.digits + strRepeat("0", maxdec - yNum.dec);
-  var maxlen = Math.max(xdig.length, ydig.length);
-  xdig = strRepeat("0", maxlen - xdig.length) + xdig;
-  ydig = strRepeat("0", maxlen - ydig.length) + ydig;
-
-  for (var i = 0; i < xdig.length; i++) {
-    if (xdig.charAt(i) < ydig.charAt(i)) {
-      return -1 * xNum.sign;
-    }
-
-    if (xdig.charAt(i) > ydig.charAt(i)) {
-      return 1 * xNum.sign;
-    }
-  }
-
-  return 0;
-};
-
-Num.prototype.compareDigits = function (x, y) {
-  if (x.length > y.length) {
-    return 1;
-  }
-
-  if (x.length < y.length) {
-    return -1;
-  }
-
-  for (var i = 0; i < x.length; i++) {
-    if (x.charAt(i) < y.charAt(i)) {
-      return -1;
-    }
-
-    if (x.charAt(i) > y.charAt(i)) {
-      return 1;
-    }
-  }
-
-  return 0;
-};
-
-Num.prototype.splitWholeFrac = function () {
-  var s = this.digits;
-  var decpos = s.length - this.dec;
-
-  if (decpos < 0) {
-    s = "0".repeat(-decpos) + s;
-    decpos = 0;
-  }
-
-  if (this.dec < 0) {
-    s = s + "0".repeat(-this.dec) + ".";
-  }
-
-  var wholePart = s.substr(0, decpos);
-  var fracPart = s.substr(decpos);
-
-  if (fracPart.replace(/^0+/, "").length == 0) {
-    fracPart = "";
-  } else {
-    fracPart = "0." + fracPart;
-  }
-
-  return [wholePart, fracPart];
-};
-
-Num.prototype.fullBaseWhole = function (d, base) {
-  var baseStr = base.toString();
-  var dWhole = this.fullDivide(d, baseStr, 0);
-  var dRem = this.fullSubtract(d, this.fullMultiply(dWhole, baseStr));
-
-  if (dWhole == "0") {
-    return this.baseDigits.charAt(dRem >> 0);
-  } else {
-    return this.fullBaseWhole(dWhole, base) + this.baseDigits.charAt(dRem >> 0);
-  }
-};
-
-Num.prototype.fullBaseFrac = function (d, base, places, level) {
-  level = typeof level !== "undefined" ? level : 0;
-  var r = this.fullMultiply(d, base.toString());
-  var parts = r.split(".");
-  var wholePart = parts[0];
-
-  if (parts.length == 1 || level >= places - 1) {
-    return this.baseDigits.charAt(wholePart >> 0);
-  } else {
-    var fracPart = "0." + parts[1];
-    return (
-      this.baseDigits.charAt(wholePart >> 0) +
-      this.fullBaseFrac(fracPart, base, places, level + 1)
+    this.coords = new Coords(
+      this.opt.lineWidth, this.opt.minHeight, "-1", "-10", "11", "10"
     );
-  }
-};
 
-Num.prototype.getSignStr = function () {
-  if (this.sign == -1) {
-    return "-";
-  } else {
-    return "";
-  }
-};
-
-Num.prototype.getWholeStr = function () {
-  var s = this.digits;
-  var decpos = s.length - this.dec;
-
-  if (decpos < 0) {
-    s = "0".repeat(-decpos) + s;
-    decpos = 0;
+    this._bindEvents();
+    this.resize();
+    this._loop = this._loop.bind(this);
+    this._raf = requestAnimationFrame(this._loop);
   }
 
-  if (this.dec < 0) {
-    s = s + "0".repeat(-this.dec) + ".";
-  }
+  Numberline.prototype.reset = function () {
+    if (this.destroyed) return this;
 
-  return s.substr(0, decpos);
-};
+    this.coords = new Coords(
+      this.opt.lineWidth, this.opt.minHeight, "-1", "-10", "11", "10"
+    );
+    this.zoomLevel = 0;
+    this.zoomCount = 0;
+    this.moveCount = 0;
+    this.redraw();
+    this._emitChange();
+    return this;
+  };
 
-Num.prototype.getDecStr = function () {
-  var s = this.digits;
-  var decpos = s.length - this.dec;
+  /** Keep the backing store in sync with CSS size and devicePixelRatio. */
+  Numberline.prototype.resize = function () {
+    if (this.destroyed) return;
 
-  if (decpos < 0) {
-    s = "0".repeat(-decpos) + s;
-    decpos = 0;
-  }
+    var rect = this.canvas.getBoundingClientRect();
+    var cssW = rect.width || this.opt.width;
+    var cssH = rect.height || this.opt.minHeight;
 
-  if (this.dec < 0) {
-    s = s + "0".repeat(-this.dec) + ".";
-  }
+    // Cap DPR: past 3x the extra pixels cost more than they show.
+    var dpr = Math.min(global.devicePixelRatio || 1, 3);
 
-  return s.substr(decpos);
-};
+    this.opt.width = cssW;
+    this.opt.minHeight = cssH;
+    this.canvas.width = Math.round(cssW * dpr);
+    this.canvas.height = Math.round(cssH * dpr);
 
-Num.prototype.fullProdSeq = function (n0, n1) {
-  if (n0 == n1) return n1.toString();
-  var nMid = ((n1 + n0) / 2) << 0;
-  return this.fullMultiplyInt(
-    this.fullProdSeq(n0, nMid),
-    this.fullProdSeq(nMid + 1, n1)
-  );
-};
+    // The line occupies the canvas minus a margin on each side.
+    this.opt.left = Math.max(16, Math.round(cssW * 0.04));
+    this.opt.lineWidth = Math.round(cssW - this.opt.left * 2);
 
-Num.prototype.getSci = function () {
-  var len = this.digits.length;
-  var s = this.digits.substr(0, 1) + "." + this.digits.substr(1);
-  s = s.replace(/0+$/, "");
+    // Content is stacked above the line: a marker band, then a label row,
+    // then the ticks. Only a small amount sits below. Centring the line in
+    // the canvas left a dead band at the bottom, so the line is placed so
+    // the whole composition reads as balanced.
+    var topBand = 78; // marker + label rows
+    var bottomBand = 20;
+    var usable = Math.max(60, cssH - topBand - bottomBand);
 
-  if (s.charAt(s.length - 1) == ".") {
-    s = s.substr(0, s.length - 1);
-  }
+    this.opt.lineY = Math.round(topBand + usable * 0.72);
 
-  if (this.sign == -1) {
-    s = "-" + s;
-  }
+    this.dpr = dpr;
+    this.scale = 1;
 
-  return [s, len - this.dec - 1];
-};
+    this.coords.width = this.opt.lineWidth;
+    this.coords.calcScale();
 
-Num.prototype.fullCombPerm = function (n, r, orderQ, replaceQ) {
-  var i = 1;
-  var s = "";
+    if (this.currX === 0) this.currX = cssW / 2;
+    this.currX = Math.min(Math.max(this.currX, 0), cssW);
 
-  if (orderQ) {
-    if (replaceQ) {
-      s = this.fullPower(n.toString(), r);
-    } else {
-      if (r > n) {
-        s = "";
-      } else {
-        s = this.fullProdSeq(n - r + 1, n);
+    this.redraw();
+  };
+
+  Numberline.prototype._bindEvents = function () {
+    var self = this;
+    var el = this.canvas;
+
+    function localX(clientX) {
+      var rect = el.getBoundingClientRect();
+      return rect.width ? ((clientX - rect.left) / rect.width) * self.opt.width : 0;
+    }
+
+    el.addEventListener("pointermove", function (ev) {
+      if (self.destroyed) return;
+      self.currX = localX(ev.clientX);
+      self.hoverX = self.currX;
+    });
+
+    el.addEventListener("pointerdown", function (ev) {
+      if (self.destroyed) return;
+      self.pointerDown = true;
+      self.shiftQ = ev.shiftKey;
+      self.currX = localX(ev.clientX);
+
+      // A canvas does not take focus from a pointer press on its own, so
+      // the keyboard shortcuts would only ever work after a Tab. Focusing
+      // here is what makes "click the line, then use the arrow keys" work.
+      if (document.activeElement !== el) {
+        try { el.focus({ preventScroll: true }); } catch (e) { el.focus(); }
+      }
+
+      // Keep receiving events if the pointer leaves the canvas mid-drag.
+      if (el.setPointerCapture) {
+        try { el.setPointerCapture(ev.pointerId); } catch (e) { /* ignore */ }
+      }
+      el.classList.add("is-active");
+      ev.preventDefault();
+    });
+
+    function release(ev) {
+      if (self.destroyed || !self.pointerDown) return;
+      self.pointerDown = false;
+      // Pending wheel/key notches are intentionally left alone: clearing
+      // them here swallowed zoom the user had just requested.
+      el.classList.remove("is-active");
+      if (ev && el.releasePointerCapture && ev.pointerId != null) {
+        try { el.releasePointerCapture(ev.pointerId); } catch (e) { /* ignore */ }
       }
     }
-  } else {
-    var tops = [];
-    var bots = [];
 
-    if (replaceQ) {
-      if (false) {
+    el.addEventListener("pointerup", release);
+    el.addEventListener("pointercancel", release);
+    global.addEventListener("pointerup", release);
+
+    el.addEventListener("pointerleave", function () {
+      self.hoverX = null;
+    });
+
+    // BUGFIX: wheel, keyboard and double-click handlers were defined but
+    // never attached in the original, so those inputs did nothing.
+    var WHEEL_NOTCHES = 5;
+
+    el.addEventListener(
+      "wheel",
+      function (ev) {
+        if (self.destroyed) return;
+
+        var delta = ev.deltaY || 0;
+
+        // Normalise the three deltaMode units to something comparable.
+        if (ev.deltaMode === 1) delta *= 16;
+        else if (ev.deltaMode === 2) delta *= 400;
+
+        self.currX = localX(ev.clientX);
+
+        // One physical notch is ~100px of deltaY. Scrolling down (delta > 0)
+        // means zoom OUT, so the sign is negated against zoomCount's
+        // "positive = zoom in" convention.
+        var notches = Math.round(Math.max(-3, Math.min(3, delta / 100)) * WHEEL_NOTCHES);
+
+        if (notches === 0) notches = delta > 0 ? WHEEL_NOTCHES : -WHEEL_NOTCHES;
+
+        // Clamp the queue so a fast flick cannot bank an unbounded amount of
+        // zoom that keeps running long after the user has stopped.
+        self.zoomCount = Math.max(-60, Math.min(60, self.zoomCount - notches));
+
+        ev.preventDefault();
+      },
+      { passive: false }
+    );
+
+    el.addEventListener("dblclick", function (ev) {
+      if (self.destroyed) return;
+      self.currX = localX(ev.clientX);
+      self.zoomCount = Math.max(-60, Math.min(60, self.zoomCount + (self.zoomInQ ? 30 : -30)));
+      ev.preventDefault();
+    });
+
+    // One keydown listener on the element is enough: the canvas is focusable
+    // and focus is taken on pointerdown. Registering a second listener on
+    // window (as an earlier revision did) double-fired every shortcut.
+    el.addEventListener("keydown", function (ev) {
+      if (self.destroyed) return;
+      self.onKey(ev);
+    });
+
+    el.tabIndex = 0;
+
+    global.addEventListener("resize", function () {
+      self.resize();
+    });
+
+    if (global.ResizeObserver) {
+      new ResizeObserver(function () {
+        self.resize();
+      }).observe(el.parentElement || el);
+    }
+  };
+
+  /** Keyboard control. Positive counts zoom in / pan right. */
+  Numberline.prototype.onKey = function (ev) {
+    if (this.destroyed) return;
+    if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+
+    switch (ev.key) {
+      case "ArrowUp":
+      case "w":
+      case "W":
+      case "+":
+      case "=":
+        this.zoomCount += 8; // zoom in
+        break;
+      case "ArrowDown":
+      case "s":
+      case "S":
+      case "-":
+      case "_":
+        this.zoomCount -= 8; // zoom out
+        break;
+      case "ArrowLeft":
+      case "a":
+      case "A":
+        this.moveCount -= 8;
+        break;
+      case "ArrowRight":
+      case "d":
+      case "D":
+        this.moveCount += 8;
+        break;
+      case "r":
+      case "R":
+        this.reset();
+        break;
+      default:
+        return;
+    }
+
+    this.shiftQ = ev.shiftKey;
+    ev.preventDefault();
+  };
+
+  Numberline.prototype.toggleZoomIn = function () {
+    if (this.destroyed) return this.zoomInQ;
+
+    this.zoomInQ = !this.zoomInQ;
+    this._emitChange();
+    return this.zoomInQ;
+  };
+
+  Numberline.prototype.setZoomIn = function (on) {
+    if (this.destroyed) return this;
+
+    this.zoomInQ = !!on;
+    this._emitChange();
+  };
+
+  /**
+   * Queue `steps` zoom steps. Positive zooms in, negative zooms out.
+   * The queue is clamped so a runaway cannot be banked.
+   */
+  Numberline.prototype.zoomBy = function (steps) {
+    if (this.destroyed) return this;
+
+    this.zoomCount = Math.max(-60, Math.min(60, this.zoomCount + steps));
+    return this;
+  };
+
+  /**
+   * Human-readable window bounds. The span decides how many decimals are
+   * worth showing, so a wide view stays short while a deep zoom stays
+   * informative instead of always printing the full 40-digit window.
+   */
+  Numberline.prototype.getRangeLabel = function () {
+    if (!this.coords) return "";
+
+    var span = this.coords.xEnd.sub(this.coords.xStt);
+    var sci = span.abs().getSci();
+    var exp = sci[1];
+
+    // Show ~3 decimals past the leading digit of the span, capped so the
+    // HUD line cannot grow without bound.
+    var places = Math.max(0, Math.min(24, 3 - exp));
+    var sig = Math.max(8, places + 5);
+
+    return this.coords.xStt.fmt(sig, 0) + " … " + this.coords.xEnd.fmt(sig, 0);
+  };
+
+  Numberline.prototype._emitChange = function () {
+    if (this.destroyed) return;
+
+    if (typeof this.opt.onChange === "function") {
+      this.opt.onChange({
+        zoomLevel: this.zoomLevel,
+        zoomInQ: this.zoomInQ,
+        range: this.getRangeLabel()
+      });
+    }
+  };
+
+  /**
+   * One animation tick.
+   *
+   * Continuous input (a held pointer, a key held down) is expressed as a
+   * per-frame *rate*; discrete input (a wheel notch, a double click) is an
+   * accumulator of pending notches. Both drain through the same bounded
+   * budget so a fast flick cannot dump hundreds of redraws into one frame.
+   */
+  Numberline.prototype._loop = function () {
+    // A destroy() during the previous tick must win over the re-arm below.
+    if (this.destroyed) return;
+
+    var edge = this.opt.edge;
+    var heldZoom = 0;
+    var heldPan = 0;
+
+    if (this.pointerDown) {
+      if (this.currX < edge || this.currX > this.opt.width - edge) {
+        // Pointer parked near an edge: pan continuously, faster the closer
+        // it gets to the border.
+        heldPan =
+          this.currX < edge
+            ? -(edge - this.currX) * this.opt.edgeSpeed
+            : (this.currX - (this.opt.width - edge)) * this.opt.edgeSpeed;
       } else {
-        for (i = n; i <= n + r - 1; i++) {
-          tops.push(i);
-        }
-
-        for (i = 2; i <= r; i++) {
-          bots.push(i);
-        }
+        // Pointer held over the line: zoom at a fixed rate per frame. This
+        // is a *rate*, not an accumulator, so it is applied separately and
+        // never added to the queued wheel/key notches.
+        heldZoom = this.shiftQ || !this.zoomInQ ? -1 : 1;
       }
-    } else {
-      if (r > n) {
-        s = "";
-      } else {
-        if (r < n - r) {
-          for (i = n - r + 1; i <= n; i++) {
-            tops.push(i);
-          }
+    }
 
-          for (i = 2; i <= r; i++) {
-            bots.push(i);
-          }
+    // Anything the user queued (wheel, double click, buttons, keys).
+    // Positive zoomCount means zoom in, matching doZoom's convention.
+    var pendingZoom = this.zoomCount;
+    var pendingPan = this.moveCount;
+    this.zoomCount = 0;
+    this.moveCount = 0;
+
+    // Zoom is geometric, so N steps collapse into one exact pow() rather
+    // than N redraws. This is what keeps a fast wheel flick cheap.
+    var zoomSteps = Math.max(-14, Math.min(14, pendingZoom));
+
+    if (zoomSteps !== 0) {
+      this.doZoom(zoomSteps);
+    } else if (heldZoom !== 0) {
+      // Only applies once the queue has drained, so held and queued zoom
+      // never interleave into a runaway.
+      this.doZoom(heldZoom);
+    }
+
+    if (pendingPan !== 0) {
+      // Pan is linear, so one relative move is exact and far cheaper than
+      // replaying N discrete steps.
+      this.doMove(Math.max(-14, Math.min(14, pendingPan)));
+    } else if (heldPan !== 0) {
+      this.coords.moveRel(heldPan);
+      this.redraw();
+      this._emitChange();
+    }
+
+    this._raf = requestAnimationFrame(this._loop);
+  };
+
+  /**
+   * Stop the animation loop. The instance becomes inert: further calls to
+   * resize/reset/redraw are ignored rather than restarting the loop.
+   */
+  Numberline.prototype.destroy = function () {
+    if (this.destroyed) return;
+    this.destroyed = true;
+
+    if (this._raf) cancelAnimationFrame(this._raf);
+    this._raf = null;
+
+    this.pointerDown = false;
+    this.zoomCount = 0;
+    this.moveCount = 0;
+
+    if (this.coords) this.coords = null;
+  };
+
+  /**
+   * Apply one zoom step.
+   *
+   * Convention, used everywhere: a positive argument means ZOOM IN, which
+   * shrinks the visible numeric window (scale factor < 1 makes the span
+   * smaller). `zoomLevel` therefore counts steps of magnification, and
+   * `zoomCount` accumulates the same sign.
+   *
+   * BUGFIX: the original mixed two conventions — `zoomCount` was positive
+   * for zoom-in while `doZoom` treated positive as zoom-out, so the arrow
+   * keys and the toolbar buttons did the opposite of their labels.
+   */
+  Numberline.prototype.doZoom = function (steps) {
+    if (this.destroyed || !this.coords || !steps) return;
+
+    var rel = (this.currX - this.opt.left) / this.opt.lineWidth;
+    rel = Math.max(Math.min(rel, 1), 0);
+
+    // Zooming in narrows the window by zoomStep per step.
+    var factor = Math.pow(this.opt.zoomStep, -steps);
+
+    this.coords.scale(factor, rel);
+    this.zoomLevel += steps;
+    this.redraw();
+    this._emitChange();
+  };
+
+  /**
+   * Pan by `steps` screen-widths. Positive moves toward positive numbers.
+   */
+  Numberline.prototype.doMove = function (steps) {
+    if (this.destroyed || !this.coords || !steps) return;
+    this.coords.moveRel(steps * 0.015);
+    this.redraw();
+    this._emitChange();
+  };
+
+  /**
+   * BUGFIX: when zoomed far in, the visible window is much narrower than
+   * the "sparseness" span, so the tick loop could try to emit tens of
+   * thousands of ticks. The count is now hard-capped.
+   */
+  Numberline.prototype.getTicks = function () {
+    if (this.destroyed || !this.coords) return [];
+
+    var coords = this.coords;
+
+    // Target: a major tick every ~7% of the visible span, rounded up to a
+    // nice 1/2/5 step. That yields roughly a dozen labelled ticks.
+    var sparseness = 0.07;
+    var majorTick = coords.xTickInterval(sparseness, true);
+    var minorTick = coords.xTickInterval(sparseness, false);
+
+    if (majorTick.isZero() || minorTick.isZero()) return [];
+
+    var perMajor = Math.round(majorTick.div(minorTick, 0).getNumber());
+
+    if (!isFinite(perMajor) || perMajor < 1) perMajor = 1;
+    if (perMajor > 100) perMajor = 100;
+
+    var minorNum = majorTick.div(new Num(perMajor.toString()), 30);
+    var curNum = coords.xStt.div(majorTick, 0).sub(new Num("1")).mult(majorTick);
+
+    // Labels sit on major ticks, so the space that matters is the gap
+    // BETWEEN MAJORS. Measuring against the minor gap suppressed almost
+    // every label and left the line showing only "0" and "10".
+    var majorGap = Math.abs(this.num2pix(majorTick) - this.num2pix(new Num("0")));
+    var sampleLabel = majorTick.fmt(40, 0);
+    var labelQ = majorGap > sampleLabel.length * 9 + 14;
+
+    var ticks = [];
+    var guard = 0;
+
+    while (curNum.compare(coords.xEnd) <= 0 && ticks.length < this.opt.maxTicks && guard++ < 5000) {
+      var tick = curNum.clone();
+
+      for (var i = 0; i < perMajor; i++, tick = tick.add(minorNum)) {
+        if (tick.compare(coords.xStt) < 0) continue;
+        if (tick.compare(coords.xEnd) > 0) continue;
+
+        ticks.push({
+          major: i === 0,
+          px: this.num2pix(tick),
+          label: labelQ && i === 0 ? this.tickLabel(tick, majorTick) : null,
+          isZero: tick.isZero()
+        });
+
+        if (ticks.length >= this.opt.maxTicks) break;
+      }
+
+      curNum = curNum.add(majorTick);
+    }
+
+    return ticks;
+  };
+
+  /** Shortest exact label for a tick, given the step between majors. */
+  Numberline.prototype.tickLabel = function (num, step) {
+    var s = num.fmt(40, 0);
+
+    if (s.length > 14) {
+      // Very long labels are useless on screen; fall back to exponent form.
+      s = num.fmt(40, 7);
+    }
+
+    return s;
+  };
+
+  Numberline.prototype.num2pix = function (num) {
+    var span = this.coords.xEnd.sub(this.coords.xStt).getNumber();
+    if (!span) return 0;
+    return ((num.getNumber() - this.coords.xStt.getNumber()) / span) * this.coords.width;
+  };
+
+  Numberline.prototype.redraw = function () {
+    if (this.destroyed || !this.coords) return;
+
+    var ctx = this.ctx;
+    var dpr = this.dpr || 1;
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    this.drawNumLine(ctx);
+  };
+
+  Numberline.prototype.drawNumLine = function (ctx) {
+    var opt = this.opt;
+    var coords = this.coords;
+    var ticks = this.getTicks();
+    var yLn = opt.lineY;
+    var baseline = Math.round(yLn) + 0.5;
+
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineCap = "round";
+
+    var minV = Infinity;
+    var maxV = -Infinity;
+    var zeroPx = null;
+
+    for (var i = 0; i < ticks.length; i++) {
+      var tick = ticks[i];
+      var xp = opt.left + tick.px;
+      var label = tick.label;
+      var numeric = label === null ? null : Number(label);
+
+      if (numeric !== null) {
+        if (numeric > maxV) maxV = numeric;
+        if (numeric < minV) minV = numeric;
+      }
+
+      var color = THEME.tick;
+      var height = tick.major ? 13 : 7;
+
+      if (tick.isZero) {
+        zeroPx = xp;
+        color = THEME.zero;
+        height = 16;
+      } else if (numeric !== null && numeric < 0) {
+        color = THEME.negative;
+        height = tick.major ? 13 : 7;
+      } else if (numeric !== null && numeric > 0) {
+        color = THEME.positive;
+      }
+
+      ctx.strokeStyle = color;
+      ctx.lineWidth = tick.major ? 2 : 1;
+      ctx.beginPath();
+      ctx.moveTo(xp, baseline - height / 2);
+      ctx.lineTo(xp, baseline + height / 2);
+      ctx.stroke();
+
+      if (tick.isZero) {
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(xp, baseline, 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      if (label !== null) {
+        ctx.font = tick.major ? "600 15px ui-sans-serif, system-ui, Arial" : "13px Arial";
+        ctx.fillStyle = color;
+        // Alternate label rows so dense majors do not collide.
+        var row = tick.major && String(label).length > 5 && i % 2 ? 50 : 28;
+        ctx.fillText(label, xp, baseline - row);
+      }
+    }
+
+    ctx.restore();
+
+    // Out-of-view zero: push the split point off the appropriate end.
+    if (zeroPx === null) {
+      if (maxV !== -Infinity && maxV < 0) zeroPx = opt.left + opt.lineWidth + 1;
+      else if (minV !== Infinity && minV > 0) zeroPx = opt.left - 1;
+      else zeroPx = null;
+    }
+
+    var lnStt = opt.left - 25;
+    var lnEnd = opt.left + opt.lineWidth + 25;
+
+    // Arrowheads must be fully inside the canvas or they get clipped. Keep
+    // a margin at least as large as the head, and make the head shorter
+    // than the whole arrow so the barbs never overrun the tip.
+    var HEAD_LEN = 22;
+    var HEAD_HT = 20;
+    var SHAFT = 34;
+    var margin = HEAD_LEN + 2;
+
+    lnStt = Math.max(lnStt, margin);
+    lnEnd = Math.min(lnEnd, opt.width - margin);
+
+    // Where the solid pipe stops and the arrowhead takes over.
+    var pipeStt = lnStt + SHAFT - 8;
+    var pipeEnd = lnEnd - SHAFT + 8;
+
+    ctx.save();
+    ctx.lineWidth = 2;
+
+    if (zeroPx !== null && zeroPx > lnStt && pipeEnd > pipeStt) {
+      ctx.strokeStyle = THEME.negative;
+      ctx.drawPipe(pipeStt, baseline, Math.min(zeroPx, pipeEnd), baseline, THEME.negative);
+    }
+
+    if (zeroPx === null || zeroPx < lnEnd) {
+      ctx.strokeStyle = THEME.positive;
+      ctx.drawPipe(
+        Math.max(zeroPx === null ? pipeStt : zeroPx, pipeStt),
+        baseline,
+        pipeEnd,
+        baseline,
+        THEME.positive
+      );
+    }
+
+    // End caps: anchored at the arrow's tip, shaft pointing inward.
+    ctx.fillStyle = zeroPx !== null && zeroPx > lnStt ? THEME.negative : THEME.positive;
+    ctx.beginPath();
+    ctx.drawArrow(lnStt, baseline, SHAFT, 3, HEAD_LEN, HEAD_HT, Math.PI);
+    ctx.fill();
+
+    ctx.fillStyle = zeroPx !== null && zeroPx > lnEnd ? THEME.negative : THEME.positive;
+    ctx.beginPath();
+    ctx.drawArrow(lnEnd, baseline, SHAFT, 3, HEAD_LEN, HEAD_HT, 0);
+    ctx.fill();
+
+    ctx.restore();
+
+    this.drawMarks(ctx, baseline);
+
+    if (this.hoverX !== null && this.pointerDown) {
+      ctx.save();
+      ctx.strokeStyle = "rgba(17,24,39,0.35)";
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(this.hoverX, baseline - 34);
+      ctx.lineTo(this.hoverX, baseline + 26);
+      ctx.stroke();
+      ctx.restore();
+    }
+  };
+
+  /**
+   * Draw value markers (e.g. pi) above the tick labels.
+   *
+   * The marker occupies its own band starting above the label row, so it
+   * never lands on top of a tick label the way a shorter stem did.
+   */
+  Numberline.prototype.drawMarks = function (ctx, baseline) {
+    if (!this.marksQ || !this.marks.length) return;
+
+    // Derive the marker band from the space actually above the line, so it
+    // uses the available headroom on tall canvases without clipping on
+    // short ones.
+    var headroom = baseline - 8;
+    var stemBottom = baseline - 6;
+    var stemTop = Math.max(12, Math.min(baseline - 60, headroom - 22));
+
+    ctx.save();
+    ctx.fillStyle = "#b45309";
+    ctx.strokeStyle = "#b45309";
+    ctx.font = "700 15px ui-sans-serif, system-ui, Arial";
+    ctx.lineWidth = 2;
+    ctx.lineCap = "round";
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "center";
+
+    for (var i = 0; i < this.marks.length; i++) {
+      var mark = this.marks[i];
+      var rel = this.coords.num2Rel(mark.num);
+
+      if (rel > 0.001 && rel < 0.999) {
+        var xp = this.opt.left + rel * this.opt.lineWidth;
+
+        // Connector stem.
+        ctx.beginPath();
+        ctx.moveTo(xp, stemBottom);
+        ctx.lineTo(xp, stemTop + 10);
+        ctx.stroke();
+
+        // Arrowhead pointing down at the value on the line.
+        ctx.beginPath();
+        ctx.drawArrow(xp, stemBottom, 14, 2, 12, 8, (3 * Math.PI) / 2);
+        ctx.fill();
+
+        // Label plate: a subtle rounded chip so the marker stays legible
+        // where it crosses a tick label, without a hard white box.
+        var text = mark.label;
+        var tw = ctx.measureText(text).width;
+        var ty = stemTop - 2;
+
+        ctx.save();
+        ctx.fillStyle = "rgba(255,255,255,0.78)";
+        ctx.strokeStyle = "rgba(180,83,9,0.30)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+
+        if (ctx.roundRect) {
+          ctx.roundRect(xp - tw / 2 - 6, ty - 11, tw + 12, 22, 7);
         } else {
-          for (i = n - (n - r) + 1; i <= n; i++) {
-            tops.push(i);
-          }
-
-          for (i = 2; i <= n - r; i++) {
-            bots.push(i);
-          }
+          ctx.rect(xp - tw / 2 - 6, ty - 11, tw + 12, 22);
         }
+
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+
+        ctx.fillText(text, xp, ty);
       }
     }
 
-    cancelFrac(tops, bots);
-    s = "1";
+    ctx.restore();
+  };
 
-    for (i = 0; i < tops.length; i++) {
-      s = this.fullMultiplyInt(s, tops[i].toString());
+  /* ------------------------------------------------------------------ *
+   * Bootstrap
+   * ------------------------------------------------------------------ */
+
+  var instances = typeof WeakMap === "function" ? new WeakMap() : null;
+
+  /**
+   * Attach a number line to a canvas.
+   *
+   * `canvas` may be an element or a CSS selector; omitted entirely it uses
+   * the first <canvas> in the document. Calling this again for the same
+   * canvas returns the existing instance, so repeated calls are cheap and
+   * safe. Returns the Numberline, or null if no canvas was found.
+   */
+  function numberzoomMain(canvas, options) {
+    var el;
+
+    if (!canvas) {
+      el = document.querySelector("canvas");
+    } else if (typeof canvas === "string") {
+      el = document.querySelector(canvas);
+    } else if (canvas.nodeType === 1) {
+      el = canvas;
+    } else {
+      return null;
     }
+
+    if (!el || typeof el.getContext !== "function") return null;
+
+    if (instances && instances.has(el)) return instances.get(el);
+
+    var instance = new Numberline(el, options);
+
+    // Wrap destroy so a torn-down canvas can be re-initialised later
+    // instead of handing back a dead instance forever.
+    var originalDestroy = instance.destroy.bind(instance);
+
+    instance.destroy = function () {
+      originalDestroy();
+      if (instances) instances.delete(el);
+    };
+
+    if (instances) instances.set(el, instance);
+
+    return instance;
   }
 
-  return s;
-};
-
-Num.prototype.trimDigits = function (trimToLen) {
-  if (this.digits.length > trimToLen) {
-    var origLen = this.digits.length;
-    this.digits = this.digits.substr(0, trimToLen);
-    this.dec -= origLen - this.digits.length;
-  }
-};
-
-function strRepeat(chr, count) {
-  var s = "";
-
-  while (count > 0) {
-    s += chr;
-    count -= 1;
-  }
-
-  return s;
-}
-
-CanvasRenderingContext2D.prototype.drawPipe = function (x0, y0, x1, y1, clr) {
-  var g = this;
-  var alpha = [0.8, 0.4, 0.3, 0.2, 0.4, 0.6, 0.8];
-  var size = alpha.length;
-
-  for (var i = 0; i < size; i++) {
-    for (var j = 0; j < 2; j++) {
-      if (j == 0) {
-        g.strokeStyle = "#ffffff";
-      } else {
-        g.strokeStyle = hex2rgba(clr, alpha[i]);
-      }
-
-      var dist = (size / 2 - 1 / 2 - i) * 0.8;
-      g.beginPath();
-
-      if (y0 == y1) {
-        g.moveTo(x0, y0 - dist);
-        g.lineTo(x1, y1 - dist);
-      }
-
-      if (x0 == x1) {
-        g.moveTo(x0 + dist, y0);
-        g.lineTo(x1 + dist, y1);
-      }
-
-      g.stroke();
-    }
-  }
-};
-
-function hex2rgba(hex, opacity) {
-  hex = hex.replace("#", "");
-  var r = parseInt(hex.substring(0, 2), 16);
-  var g = parseInt(hex.substring(2, 4), 16);
-  var b = parseInt(hex.substring(4, 6), 16);
-  result = "rgba(" + r + "," + g + "," + b + "," + opacity + ")";
-  return result;
-}
+  Numberline.Num = Num;
+  Numberline.Coords = Coords;
+  Numberline.numberzoomMain = numberzoomMain;
+  global.ZoomableNumberline = Numberline;
+  global.numberzoomMain = numberzoomMain;
+  global.Num = Num;
+})(typeof window !== "undefined" ? window : this);

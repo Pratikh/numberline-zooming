@@ -1,15 +1,108 @@
 <!DOCTYPE html>
-<html>
-   <body>
-      <div class="MainContainer">
-      <canvas width="1000px" height="150px"></canvas>
-      <div>
-        <button class="resetButton" onclick="reset()">Reset</button>
-        <button class="toggleZoom" onclick="toggleZoomIn()">Zoom in</button>
-      </div>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Number Line — Infinite Zoom</title>
+    <meta
+      name="description"
+      content="An infinitely zoomable number line: drag to zoom, wheel to scroll, and watch decimals stay exact."
+    />
+    <link rel="stylesheet" href="index.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="app__header">
+        <div class="app__titles">
+          <h1 class="app__title">Zoomable Number&nbsp;Line</h1>
+          <p class="app__subtitle">
+            Drag the line to zoom toward the pointer. Hold <kbd>Shift</kbd> to
+            reverse, scroll to zoom fast, and watch the decimals stay exact.
+          </p>
+        </div>
 
-      </div>
-      <link rel="stylesheet" href="index.css">
-      <script src="ZoomableNumberline.js" onload='numberzoomMain()'></script>
-   </body >
+        <div class="toolbar" role="toolbar" aria-label="Number line controls">
+          <button type="button" class="btn" id="zoomOutBtn" title="Zoom out (ArrowDown)">
+            <span aria-hidden="true">−</span>
+            <span class="btn__text">Zoom out</span>
+          </button>
+          <button type="button" class="btn" id="zoomInBtn" title="Zoom in (ArrowUp)">
+            <span aria-hidden="true">+</span>
+            <span class="btn__text">Zoom in</span>
+          </button>
+          <button type="button" class="btn btn--ghost" id="resetBtn" title="Reset (R)">
+            Reset
+          </button>
+        </div>
+      </header>
+
+      <section class="stage">
+        <canvas
+          id="numberline"
+          class="numberline"
+          aria-label="Zoomable number line. Use arrow keys to zoom and pan."
+          role="img"
+        ></canvas>
+
+        <div class="hud">
+          <span class="hud__item">
+            <span class="hud__key">Zoom</span>
+            <output class="hud__val" id="hudZoom">1.0×</output>
+          </span>
+          <span class="hud__item">
+            <span class="hud__key">Range</span>
+            <output class="hud__val hud__val--mono" id="hudRange">−1 … 11</output>
+          </span>
+        </div>
+      </section>
+
+      <footer class="legend">
+        <span class="legend__item"><i class="dot dot--neg"></i>Negative</span>
+        <span class="legend__item"><i class="dot dot--zero"></i>Zero</span>
+        <span class="legend__item"><i class="dot dot--pos"></i>Positive</span>
+        <span class="legend__spacer"></span>
+        <span class="legend__item legend__item--hint">
+          Drag · Wheel · <kbd>↑</kbd><kbd>↓</kbd> zoom · <kbd>←</kbd><kbd>→</kbd> pan · <kbd>R</kbd> reset
+        </span>
+      </footer>
+    </main>
+
+    <script src="ZoomableNumberline.js"></script>
+    <script>
+      (function () {
+        var canvas = document.getElementById("numberline");
+        var hudZoom = document.getElementById("hudZoom");
+        var hudRange = document.getElementById("hudRange");
+
+        var line = numberzoomMain(canvas, {
+          onChange: function (state) {
+            // 2^(zoomLevel) mirrors the per-step 1.02 factor closely enough
+            // to read as a familiar magnification number.
+            var mag = Math.pow(1.02, state.zoomLevel);
+            hudZoom.textContent =
+              mag >= 1000 ? mag.toExponential(1) + "×" : mag.toFixed(mag < 10 ? 1 : 0) + "×";
+            hudRange.textContent = state.range;
+          }
+        });
+
+        document.getElementById("zoomInBtn").addEventListener("click", function () {
+          line.setZoomIn(true);
+          line.zoomBy(24); // positive = zoom in
+          canvas.focus();
+        });
+
+        document.getElementById("zoomOutBtn").addEventListener("click", function () {
+          line.setZoomIn(false);
+          line.zoomBy(-24); // negative = zoom out
+          canvas.focus();
+        });
+
+        document.getElementById("resetBtn").addEventListener("click", function () {
+          line.reset();
+          canvas.focus();
+        });
+      })();
+    </script>
+  </body>
 </html>

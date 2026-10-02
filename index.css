@@ -1,34 +1,282 @@
-.MainContainer {
-  position:relative;
-  width:1000px;
-  min-height:150px;
-  border: none;
-  border-radius: 20px;
-  background-color: #def;
-  margin:auto;
-  display:block;
+/* ------------------------------------------------------------------ *
+ * Zoomable number line - modern UI
+ * ------------------------------------------------------------------ */
+
+:root {
+  --bg: #eef3fb;
+  --bg-2: #dfe9f8;
+  --surface: #ffffff;
+  --line-bg: #eaf2ff;
+  --text: #0f172a;
+  --text-muted: #5b6b84;
+  --accent: #0b6bcb;
+  --accent-strong: #084f97;
+  --neg: #e5484d;
+  --zero: #111827;
+  --border: #cddcf0;
+  --radius: 16px;
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-md: 0 10px 30px -12px rgba(15, 23, 42, 0.28);
+  --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 
-canvas {
-  position: absolute;
-  left: 0; top:;
-  border: none;
+* {
+  box-sizing: border-box;
 }
 
-.resetButton {
-  position: absolute;
-  right:120px;
-  top: 2px;
-  color: #000aae;
-  font-size: 14px;
-  user-select: none;
+html,
+body {
+  margin: 0;
+  min-height: 100%;
 }
 
-.toggleZoom {
-  position: absolute;
-  right:25px;
-  top: 2px;
-  color: #000aae;
-  font-size: 14px;
-  user-select: none;
+body {
+  background: radial-gradient(1200px 600px at 50% -10%, #ffffff 0%, var(--bg) 45%, var(--bg-2) 100%)
+    fixed;
+  color: var(--text);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+  padding: clamp(12px, 3vw, 40px);
+}
+
+/* ------------------------------- layout ---------------------------- */
+
+.app {
+  width: min(1080px, 100%);
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.app__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.app__title {
+  margin: 0;
+  font-size: clamp(1.35rem, 1rem + 1.6vw, 2rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.app__subtitle {
+  margin: 6px 0 0;
+  max-width: 52ch;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+/* ------------------------------ toolbar ---------------------------- */
+
+.toolbar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 15px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: linear-gradient(180deg, var(--accent), var(--accent-strong));
+  color: #fff;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.12s ease, box-shadow 0.16s ease, background 0.16s ease,
+    opacity 0.16s ease;
+}
+
+.btn:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
+}
+
+.btn:active {
+  transform: translateY(0) scale(0.98);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.btn--ghost {
+  background: var(--surface);
+  color: var(--accent-strong);
+  border-color: var(--border);
+}
+
+/* ------------------------------- stage ----------------------------- */
+
+.stage {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+}
+
+.numberline {
+  display: block;
+  width: 100%;
+  /* Sized to the content it must hold: a marker band, a label row, the
+     line, and a little breathing room below. Fixed rather than viewport
+     based so tall phones do not get a mostly empty canvas. */
+  height: 240px;
+  background: linear-gradient(180deg, #ffffff 0%, var(--line-bg) 100%);
+  cursor: ew-resize;
+  touch-action: none; /* let the canvas handle drags itself */
+  outline: none;
+}
+
+.numberline.is-active {
+  cursor: crosshair;
+}
+
+.numberline:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+/* --------------------------------- HUD ----------------------------- */
+
+.hud {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  align-items: center;
+  padding: 9px 16px;
+  border-top: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(6px);
+  font-size: 0.78rem;
+}
+
+.hud__item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+}
+
+.hud__key {
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-size: 0.68rem;
+  font-weight: 600;
+}
+
+.hud__val {
+  font-weight: 600;
+  color: var(--accent-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.hud__val--mono {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ------------------------------- legend ---------------------------- */
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend__spacer {
+  flex: 1 1 auto;
+}
+
+.legend__item--hint {
+  font-size: 0.74rem;
+}
+
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.dot--neg {
+  background: var(--neg);
+}
+
+.dot--zero {
+  background: var(--zero);
+}
+
+.dot--pos {
+  background: var(--accent);
+}
+
+kbd {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+/* ----------------------------- responsive -------------------------- */
+
+@media (max-width: 640px) {
+  .app__header {
+    align-items: flex-start;
+  }
+
+  .btn__text {
+    display: none; /* icon-only toolbar on small screens */
+  }
+
+  .btn {
+    padding: 9px 13px;
+  }
+
+  .hud {
+    gap: 6px 14px;
+  }
+
+  .legend__spacer {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn {
+    transition: none;
+  }
 }
